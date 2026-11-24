@@ -34,7 +34,9 @@ import threading
 import time
 from pathlib import Path
 
-from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent
+from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent, write_index
+from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
+                    transcript_of)
 from aria_tools import (NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         ACTION_TOOLS)
@@ -179,11 +181,21 @@ def main() -> None:
 
     model_ids = f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
 
-    def system_prompt(persona: str) -> str:
+    memory = Memory(vault)
+
+    def base_prompt() -> str:
+        """Constant across sessions (with the tool schema it is ~2.6k tokens, KV-cached)."""
         today = time.strftime("%A %d %B %Y")
         tz = time.strftime("%Z")
-        return (persona + "\n\n" + SPOKEN_STYLE + ("\n\n" + TOOL_GUIDE if args.tools else "")
+        return (SPOKEN_STYLE + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + f"\n\nToday is {today} (time zone {tz}).")
+
+    def build_messages(persona: str) -> list[dict]:
+        """[base + tools] [personality] [memory]: switching personality or updating memory only
+        re-processes the later, smaller blocks."""
+        return [{"role": "system", "content": base_prompt()},
+                {"role": "system", "content": "Your personality and role:\n" + persona},
+                {"role": "system", "content": memory.system_block()}]
 
     # One KV cache for the whole process: sessions run one at a time, so each new session only
     # trims back to the shared system-prompt prefix instead of prefilling ~2k tokens again.
@@ -208,7 +220,8 @@ def main() -> None:
         shared["tokens"] = sys_tokens[:off]
 
     t_prime = time.time()
-    prime([{"role": "system", "content": system_prompt(args.text_prompt.strip() or DEFAULT_PERSONA)}])
+    last_persona = {"text": args.text_prompt.strip() or DEFAULT_PERSONA}
+    prime(build_messages(last_persona["text"]))
     emit("STATUS", f"System prompt primed ({len(shared['tokens'])} tokens) in {time.time() - t_prime:.1f}s")
     lock = asyncio.Lock()
     ui_dir = Path(args.ui_dir)
@@ -244,10 +257,11 @@ def main() -> None:
         if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
-        system = system_prompt(persona)
+        memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
+        last_persona["text"] = persona
         recorder = SessionRecorder(vault, voice, persona, mode="Aria", model_id=model_ids,
                                    assistant="Aria", user_side=True)
-        messages: list[dict] = [{"role": "system", "content": system}]
+        messages: list[dict] = build_messages(persona)
         st = {
             "gen": 0,                 # bumped to cancel the reply being generated
             "play_until": 0.0,        # monotonic time when queued audio finishes playing
@@ -257,6 +271,7 @@ def main() -> None:
             "cache_tokens": shared["tokens"],
             "latencies": [],
             "labels": {},             # tool item id -> title, for spoken confirmations
+            "recalled": set(),        # session notes already pulled into this conversation
         }
         out_q: asyncio.Queue = asyncio.Queue()
 
@@ -387,6 +402,18 @@ def main() -> None:
                 core = audio[int(STT_RATE * 0.12): max(int(STT_RATE * 0.3), audio.shape[0] - int(STT_RATE * 0.3))]
                 text_ = stt.generate(mx.array(core + dith[: core.shape[0]])).text.strip()
             return text_
+
+        def with_recall(text_: str) -> str:
+            """Attach older conversations that match this turn (BM25). Added to the user message,
+            after the cached prefix, so the KV cache stays valid."""
+            hits = [h for h in memory.recall(text_) if h["name"] not in st["recalled"]]
+            if not hits:
+                return text_
+            for h in hits:
+                st["recalled"].add(h["name"])
+            emit("MEMORY", "recalled " + ", ".join(h["name"] for h in hits))
+            notes = "\n".join(f"- {h['date']}: {h['summary']}" for h in hits)
+            return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})"
 
         def reply(audio, t_end: float, gen_id: int):
             def cancelled() -> bool:
@@ -523,9 +550,9 @@ def main() -> None:
                                                       "result": "Not run. Nothing was changed."}))
                         if verdict == "unclear":
                             # They moved on to something else: handle it as a new request.
-                            messages.append({"role": "user", "content": text})
+                            messages.append({"role": "user", "content": with_recall(text)})
                 else:
-                    messages.append({"role": "user", "content": text})
+                    messages.append({"role": "user", "content": with_recall(text)})
 
                 t_llm = time.monotonic()
                 said_parts: list[str] = []
@@ -685,6 +712,9 @@ def main() -> None:
             path = recorder.finish()
             if path is not None:
                 emit("SESSION_SAVED", str(path))
+                user_words = sum(len(t.split()) for _, sp, t in recorder.segments if sp == "You")
+                if user_words >= 8:
+                    gpu_jobs.put(lambda p=path: remember(p))
             lats = st["latencies"]
             if lats:
                 emit("STATUS", f"session end: {len(lats)} replies, latency median "
@@ -693,6 +723,34 @@ def main() -> None:
             else:
                 emit("STATUS", "session end")
             await send_task
+
+    def remember(note: Path) -> None:
+        """After a session: summary into the note, new facts into Profile.md, then re-prime."""
+        t0 = time.time()
+        try:
+            prompt = build_summary_prompt(vault, transcript_of(note))
+            chat = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
+                                                 add_generation_prompt=True, tokenize=False,
+                                                 enable_thinking=False)
+            out = "".join(r.text for r in stream_generate(lm, tokenizer, chat, max_tokens=500,
+                                                          sampler=make_sampler(temp=0.2)))
+            data = parse_json_object(out)
+            summary = str(data.get("summary", "")).strip()
+            if summary:
+                add_summary_to_note(note, summary)
+            n = merge_profile(vault, data, data.get("resolved_threads") or [])
+            write_index(vault)
+            memory.reload()
+            emit("MEMORY", f"saved summary and {n} profile updates in {time.time() - t0:.1f}s")
+            emit("SESSION_SAVED", str(note))
+        except Exception as exc:
+            emit("ERROR", f"memory update failed: {exc!r}")
+        try:
+            t1 = time.time()
+            prime(build_messages(last_persona["text"]))  # ready for the next session
+            emit("STATUS", f"re-primed for next session in {time.time() - t1:.1f}s")
+        except Exception as exc:
+            emit("ERROR", f"re-prime failed: {exc!r}")
 
     async def handle_root(_):
         resp = web.FileResponse(ui_dir / "index.html")
