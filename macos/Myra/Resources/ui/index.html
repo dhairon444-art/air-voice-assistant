@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Myra</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --panel: #ffffff; --text: #132034; --muted: #5b6475;
+    --accent: #7c5cff; --accent2: #38bdf8; --live: #fb7185; --border: #e3e6ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161c; --panel: #1d2029; --text: #eef0f6; --muted: #9aa3b5; --border: #2c303c; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  .hint { margin: 12px 16px 0; padding: 8px 12px; border-radius: 10px; font-size: 12.5px;
+    background: color-mix(in srgb, var(--accent2) 14%, transparent); color: var(--text); }
+  .hint b { font-weight: 600; }
+  main { flex: 1; display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 16px 16px; }
+  .orb { position: relative; width: 150px; height: 150px; border-radius: 50%; border: 0; cursor: pointer;
+    background: radial-gradient(circle at 35% 30%, #a78bfa, var(--accent) 55%, #4b3bb8);
+    color: #fff; font: 600 16px -apple-system, sans-serif; box-shadow: 0 10px 30px rgba(124,92,255,.35);
+    transition: transform .08s ease, box-shadow .2s; }
+  .orb:active { transform: scale(.97); }
+  .orb.live { background: radial-gradient(circle at 35% 30%, #fda4af, var(--live) 55%, #be3455);
+    box-shadow: 0 10px 30px rgba(251,113,133,.4); }
+  .orb.busy { opacity: .7; cursor: progress; }
+  .ring { position: absolute; inset: -10px; border-radius: 50%; border: 3px solid var(--accent2);
+    opacity: 0; transition: opacity .1s, transform .1s; pointer-events: none; }
+  .status { color: var(--muted); min-height: 21px; text-align: center; }
+  .meta { color: var(--muted); font-size: 12px; text-align: center; max-width: 560px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meters { display: flex; gap: 18px; font-size: 11px; color: var(--muted); align-items: center; }
+  .bar { width: 90px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 6px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent2); transition: width .08s; }
+  .bar.me > i { background: #34d399; }
+  .transcript { margin: 0 16px 16px; padding: 14px 16px; overflow-y: auto; border-radius: 12px;
+    background: var(--panel); border: 1px solid var(--border); min-height: 0; }
+  .transcript h2 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .transcript p { margin: 0 0 10px; }
+  .transcript .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 6px; }
+  .empty { color: var(--muted); font-style: italic; }
+  .saved { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="hint" role="note">🎧 <b>Use headphones.</b> Myra has no echo cancellation, so through speakers it can hear itself and talk over you.</div>
+  <main>
+    <section class="stage">
+      <button id="orb" class="orb" aria-label="Start conversation"><span class="ring" id="ring"></span><span id="orbLabel">Start</span></button>
+      <div class="status" id="status">Ready. Press Start and talk.</div>
+      <div class="meta" id="meta"></div>
+      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span>Myra<span class="bar"><i id="outBar"></i></span></span></div>
+    </section>
+    <section class="transcript" id="transcriptBox" aria-live="polite">
+      <h2>Myra said</h2>
+      <div id="transcript"><p class="empty">The text of what Myra says appears here. Your own speech is not transcribed.</p></div>
+    </section>
+  </main>
+<script>
+(() => {
+  const cfg = Object.assign({ voice: 'NATF2', persona: '' }, window.myraConfig || {});
+  const $ = (id) => document.getElementById(id);
+  const orb = $('orb'), label = $('orbLabel'), statusEl = $('status'), meta = $('meta');
+  const transcript = $('transcript'), box = $('transcriptBox');
+  let ctx = null, ws = null, mic = null, capture = null, player = null, src = null;
+  let live = false, startTime = 0, lastText = 0, curP = null;
+
+  const post = (msg) => { try { window.webkit.messageHandlers.myra.postMessage(msg); } catch (_) {} };
+  const setStatus = (t) => { statusEl.textContent = t; };
+  const renderMeta = () => {
+    meta.textContent = `Voice ${cfg.voice} · ${cfg.persona ? cfg.persona : 'default persona'}`;
+  };
+  window.myraSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); };
+  renderMeta();
+
+  function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+
+  function addText(piece) {
+    const now = performance.now();
+    if (!curP || now - lastText > 3000) {
+      if (transcript.querySelector('.empty')) transcript.innerHTML = '';
+      curP = document.createElement('p');
+      const t = document.createElement('span'); t.className = 't'; t.textContent = fmt((now - startTime) / 1000);
+      curP.appendChild(t);
+      curP.appendChild(document.createTextNode(''));
+      transcript.appendChild(curP);
+      piece = piece.replace(/^\s+/, '');
+    }
+    curP.lastChild.textContent += piece;
+    lastText = now;
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function start() {
+    if (live) return;
+    orb.classList.add('busy'); label.textContent = '…';
+    try {
+      if (!ctx) {
+        ctx = new AudioContext({ latencyHint: 'interactive' });
+        await ctx.audioWorklet.addModule('/static/worklet.js');
+      }
+      await ctx.resume();
+      setStatus('Asking for the microphone…');
+      mic = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (err) {
+      orb.classList.remove('busy'); label.textContent = 'Start';
+      setStatus('Microphone unavailable: ' + (err && err.message ? err.message : err) + '. Check System Settings › Privacy & Security › Microphone › Myra.');
+      return;
+    }
+    transcript.innerHTML = '<p class="empty">Preparing Myra with your persona and voice…</p>';
+    curP = null;
+    setStatus('Preparing persona and voice…');
+    const q = new URLSearchParams({ voice: cfg.voice || 'NATF2', persona: cfg.persona || '' });
+    ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = (ev) => {
+      const data = new Uint8Array(ev.data);
+      const kind = data[0];
+      if (kind === 0) { goLive(); }
+      else if (kind === 1) {
+        const pcm = new Int16Array(ev.data.slice(1));
+        const f = new Float32Array(pcm.length);
+        for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+        if (player) player.port.postMessage(f.buffer, [f.buffer]);
+      } else if (kind === 2) { addText(new TextDecoder().decode(data.slice(1))); }
+      else if (kind === 3) { setStatus(new TextDecoder().decode(data.slice(1))); }
+    };
+    ws.onclose = () => { stop(true); };
+    ws.onerror = () => { setStatus('Lost connection to the model.'); };
+  }
+
+  function goLive() {
+    live = true; startTime = performance.now();
+    if (transcript.querySelector('.empty')) transcript.innerHTML = '<p class="empty">Listening… say hello.</p>';
+    orb.classList.remove('busy'); orb.classList.add('live'); label.textContent = 'End';
+    orb.setAttribute('aria-label', 'End conversation');
+    setStatus('Live. Talk to Myra.');
+    src = ctx.createMediaStreamSource(mic);
+    capture = new AudioWorkletNode(ctx, 'myra-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
+    capture.port.onmessage = (e) => {
+      $('micBar').style.width = Math.min(100, e.data.level * 400) + '%';
+      if (ws && ws.readyState === 1) {
+        const body = new Uint8Array(e.data.pcm);
+        const msg = new Uint8Array(body.length + 1); msg[0] = 1; msg.set(body, 1);
+        ws.send(msg);
+      }
+    };
+    src.connect(capture);
+    player = new AudioWorkletNode(ctx, 'myra-player', { numberOfInputs: 0, outputChannelCount: [2] });
+    player.port.onmessage = (e) => { $('outBar').style.width = Math.min(100, e.data.level * 400) + '%'; };
+    player.connect(ctx.destination);
+    post({ type: 'state', state: 'live' });
+  }
+
+  function stop(fromClose) {
+    const wasLive = live;
+    live = false;
+    if (ws && !fromClose) { try { ws.close(); } catch (_) {} }
+    ws = null;
+    if (src) { try { src.disconnect(); } catch (_) {} src = null; }
+    if (capture) { try { capture.disconnect(); } catch (_) {} capture = null; }
+    if (player) { try { player.disconnect(); } catch (_) {} player = null; }
+    if (mic) { mic.getTracks().forEach((t) => t.stop()); mic = null; }
+    $('micBar').style.width = '0'; $('outBar').style.width = '0';
+    orb.classList.remove('live', 'busy'); label.textContent = 'Start';
+    orb.setAttribute('aria-label', 'Start conversation');
+    if (wasLive) {
+      setStatus('Conversation ended. Saved to the Myra vault in Obsidian (see History).');
+      post({ type: 'state', state: 'ended' });
+    } else if (fromClose && statusEl.textContent.startsWith('Preparing')) {
+      setStatus('Could not start the conversation.');
+    }
+  }
+
+  orb.addEventListener('click', () => { if (live) stop(false); else if (!ws) start(); });
+  window.myraStop = () => stop(false);
+  window.addEventListener('keydown', (e) => { if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); orb.click(); } });
+})();
+</script>
+</body>
+</html>
