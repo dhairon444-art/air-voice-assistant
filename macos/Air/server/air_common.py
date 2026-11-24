@@ -42,13 +42,50 @@ def shutdown(reason: str) -> None:
         os._exit(0)
 
 
+_tool_waiters: dict[str, list] = {}
+_tool_lock = threading.Lock()
+
+
+def call_app_tool(name: str, args: dict, timeout: float = 60.0) -> dict:
+    """Ask Air.app to run a tool (EventKit, Apple Events, files...) and wait for the result.
+
+    Request:  stdout line  AIR_TOOL <id> <json {"name":..., "args":...}>
+    Response: stdin line   TOOL_RESULT <id> <json>
+    """
+    import uuid
+
+    call_id = uuid.uuid4().hex[:12]
+    done = threading.Event()
+    slot: list = [done, None]
+    with _tool_lock:
+        _tool_waiters[call_id] = slot
+    emit("TOOL", f"{call_id} {json.dumps({'name': name, 'args': args})}")
+    if not done.wait(timeout):
+        with _tool_lock:
+            _tool_waiters.pop(call_id, None)
+        return {"ok": False, "error": "The app did not answer in time."}
+    return slot[1] or {"ok": False, "error": "empty result"}
+
+
 def watch_parent(parent_pid: int | None) -> None:
-    """Exit when the app dies, even on force quit / crash (SIGKILL)."""
+    """Exit when the app dies, even on force quit / crash (SIGKILL).
+    stdin also carries tool results from the app (see call_app_tool)."""
 
     def stdin_watch():
         try:
-            while sys.stdin.buffer.read(1024):
-                pass
+            for raw in sys.stdin.buffer:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("TOOL_RESULT "):
+                    continue
+                _, call_id, payload = (line.split(" ", 2) + [""])[:3]
+                with _tool_lock:
+                    slot = _tool_waiters.pop(call_id, None)
+                if slot is not None:
+                    try:
+                        slot[1] = json.loads(payload)
+                    except ValueError:
+                        slot[1] = {"ok": False, "error": "bad result from app"}
+                    slot[0].set()
         except Exception:
             pass
         shutdown("parent closed pipe")
@@ -205,6 +242,7 @@ class SessionRecorder:
         self.start_mono = time.monotonic()
         self.end: datetime | None = None
         self.segments: list[list] = []  # [offset_seconds, speaker, text]
+        self.tool_log: list[dict] = []   # every tool call: time, tool, args, confirmation, result
         self.last_mono: dict[str, float] = {}
         self.lock = threading.Lock()
         self.finished = False
@@ -306,6 +344,15 @@ class SessionRecorder:
                 body.append("")
         else:
             body.append("_Nothing was said in this session._")
+            body.append("")
+        if self.tool_log:
+            body += ["## Tool calls", "",
+                     "| Time | Tool | Arguments | Confirmation | Result |",
+                     "| --- | --- | --- | --- | --- |"]
+            for t in self.tool_log:
+                cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")[:160]
+                body.append(f"| {t['time']} | {t['tool']} | {cell(json.dumps(t['args'], ensure_ascii=False))} "
+                            f"| {t['confirm']} | {cell(t['result'])} |")
             body.append("")
         return "\n".join(fm + body)
 

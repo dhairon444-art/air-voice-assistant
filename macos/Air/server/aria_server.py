@@ -34,7 +34,10 @@ import threading
 import time
 from pathlib import Path
 
-from air_common import SessionRecorder, emit, ensure_vault, watch_parent
+from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent
+from aria_tools import (NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+                        describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
+                        ACTION_TOOLS)
 
 DEFAULT_PERSONA = (
     "You enjoy having a good conversation. Your name is Aria, and you are a warm, kind and "
@@ -61,9 +64,14 @@ STT_RATE = 16000
 TTS_RATE = 24000
 
 
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
+
+
 def to_ascii_quotes(s: str) -> str:
+    s = re.sub(r"\s*[—–]\s*", ", ", s)
+    s = _EMOJI.sub("", s)
     return (s.replace("’", "'").replace("‘", "'").replace("“", '"')
-             .replace("”", '"').replace("—", ", ").replace("–", ", "))
+             .replace("”", '"'))
 
 
 def clean_for_speech(s: str) -> str:
@@ -109,6 +117,7 @@ def main() -> None:
     p.add_argument("--voice", default="af_heart")
     p.add_argument("--text-prompt", default=DEFAULT_PERSONA)
     p.add_argument("--max-tokens", type=int, default=450)
+    p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
     p.add_argument("--temp", type=float, default=0.7)
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
     p.add_argument("--vad-margin-db", type=float, default=14.0, help="speech must be this far above the noise floor")
@@ -169,6 +178,38 @@ def main() -> None:
     emit("MEMORY", f"active={mx.get_active_memory() / 1e9:.2f}GB peak={mx.get_peak_memory() / 1e9:.2f}GB")
 
     model_ids = f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
+
+    def system_prompt(persona: str) -> str:
+        today = time.strftime("%A %d %B %Y")
+        tz = time.strftime("%Z")
+        return (persona + "\n\n" + SPOKEN_STYLE + ("\n\n" + TOOL_GUIDE if args.tools else "")
+                + f"\n\nToday is {today} (time zone {tz}).")
+
+    # One KV cache for the whole process: sessions run one at a time, so each new session only
+    # trims back to the shared system-prompt prefix instead of prefilling ~2k tokens again.
+    shared = {"cache": make_prompt_cache(lm), "tokens": []}
+
+    def prime(msgs: list) -> None:
+        sys_tokens = list(tokenizer.apply_chat_template(
+            msgs, tools=TOOLS if args.tools else None, add_generation_prompt=False,
+            tokenize=True, enable_thinking=False))
+        common = 0
+        for x, y in zip(shared["tokens"], sys_tokens):
+            if x != y:
+                break
+            common += 1
+        if len(shared["tokens"]) > common:
+            trim_prompt_cache(shared["cache"], len(shared["tokens"]) - common)
+        if common < len(sys_tokens):
+            for _ in stream_generate(lm, tokenizer, sys_tokens[common:], max_tokens=1,
+                                     prompt_cache=shared["cache"]):
+                pass
+        off = shared["cache"][0].offset
+        shared["tokens"] = sys_tokens[:off]
+
+    t_prime = time.time()
+    prime([{"role": "system", "content": system_prompt(args.text_prompt.strip() or DEFAULT_PERSONA)}])
+    emit("STATUS", f"System prompt primed ({len(shared['tokens'])} tokens) in {time.time() - t_prime:.1f}s")
     lock = asyncio.Lock()
     ui_dir = Path(args.ui_dir)
     # One thread owns all GPU (MLX) work; VAD runs on the CPU stream next to it.
@@ -203,7 +244,7 @@ def main() -> None:
         if voice not in FEMALE_VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
-        system = persona + "\n\n" + SPOKEN_STYLE
+        system = system_prompt(persona)
         recorder = SessionRecorder(vault, voice, persona, mode="Aria", model_id=model_ids,
                                    assistant="Aria", user_side=True)
         messages: list[dict] = [{"role": "system", "content": system}]
@@ -212,9 +253,10 @@ def main() -> None:
             "play_until": 0.0,        # monotonic time when queued audio finishes playing
             "busy": False,            # a reply is being generated
             "closed": False,
-            "cache": make_prompt_cache(lm),
-            "cache_tokens": [],
+            "cache": shared["cache"],      # one KV cache reused across sessions
+            "cache_tokens": shared["tokens"],
             "latencies": [],
+            "labels": {},             # tool item id -> title, for spoken confirmations
         }
         out_q: asyncio.Queue = asyncio.Queue()
 
@@ -226,7 +268,7 @@ def main() -> None:
 
         # ---------------- VAD (CPU stream, its own thread) ----------------
         mic_q: queue.Queue = queue.Queue()
-        utter: list = []          # 16 kHz float chunks of the current user turn
+        utter: list = []          # 24 kHz float frames of the current user turn
         pre: list = []            # rolling 300 ms pre-roll
         turn = {"speaking": False, "speech_ms": 0.0, "silence_ms": 0.0, "end_t": 0.0}
 
@@ -239,10 +281,17 @@ def main() -> None:
             send(6)
 
         def end_turn(manual: bool = False):
-            audio = np.concatenate(utter) if utter else np.zeros(0, np.float32)
+            audio24 = np.concatenate(utter) if utter else np.zeros(0, np.float32)
             utter.clear()
+            # resample the whole turn once (per-chunk resampling leaves clicks that hurt STT)
+            if not manual and audio24.size:
+                # drop most of the trailing pause we waited through; keep ~150 ms
+                keep = audio24.shape[0] - int(24000 * max(0.0, args.silence_ms / 1000.0 - 0.15))
+                audio24 = audio24[: max(keep, 1)]
+            audio = resample_poly(audio24, 2, 3).astype(np.float32) if audio24.size else audio24
             turn["speaking"] = False
             turn["speech_ms"] = 0.0
+            emit("TURN", f"end of turn: {audio.shape[0] / STT_RATE:.2f}s of audio{' (manual)' if manual else ''}")
             if audio.shape[0] < STT_RATE * 0.25:
                 set_state("listening")
                 return
@@ -257,7 +306,7 @@ def main() -> None:
         def vad_loop():
             """Turn detection in plain numpy (no MLX here: MLX work on a second thread stalls
             the GPU thread's TTS). 20 ms frames, band-limited energy vs an adaptive noise floor."""
-            frame = 320  # 20 ms at 16 kHz
+            frame = 480  # 20 ms at 24 kHz
             buf = np.zeros(0, np.float32)
             noise_db = -60.0
             prev = 0.0
@@ -290,7 +339,7 @@ def main() -> None:
                         utter.append(x)
                     else:
                         pre.append(x)
-                        if len(pre) > 15:  # 300 ms pre-roll
+                        if len(pre) > 8:  # 160 ms pre-roll
                             pre.pop(0)
                     if speech:
                         turn["speech_ms"] += 20
@@ -314,79 +363,97 @@ def main() -> None:
         threading.Thread(target=vad_loop, name="air-vad", daemon=True).start()
 
         # ---------------- reply: STT -> LLM -> TTS (GPU thread) ----------------
+        def run_tool(name: str, targs: dict, confirm: str) -> dict:
+            clean = {k: v for k, v in targs.items() if not k.startswith("_")}
+            t = time.strftime("%H:%M:%S")
+            result = call_app_tool(name, clean) if name in TOOL_NAMES else \
+                {"ok": False, "error": f"unknown tool {name}"}
+            # remember titles for ids, so confirmations can say "Dentist" instead of an id
+            for item in (result.get("events") or []) + (result.get("reminders") or []):
+                if isinstance(item, dict) and item.get("id"):
+                    st["labels"][item["id"]] = item.get("title", "")
+            summary = result.get("summary") or result.get("error") or json.dumps(result)[:200]
+            recorder.tool_log.append({"time": t, "tool": name, "args": clean, "confirm": confirm,
+                                      "result": ("ok: " if result.get("ok") else "failed: ") + str(summary)})
+            emit("TOOLCALL", f"{name} {json.dumps(clean)} -> {str(summary)[:200]}")
+            return result
+
+        def transcribe(audio) -> str:
+            rng = np.random.default_rng()
+            dith = (rng.standard_normal(audio.shape[0]) * 3e-4).astype(np.float32)
+            text_ = stt.generate(mx.array(audio + dith)).text.strip()
+            if not text_ and audio.shape[0] > STT_RATE * 0.5:
+                # Parakeet can return nothing for a very short word padded with silence: retry tighter.
+                core = audio[int(STT_RATE * 0.12): max(int(STT_RATE * 0.3), audio.shape[0] - int(STT_RATE * 0.3))]
+                text_ = stt.generate(mx.array(core + dith[: core.shape[0]])).text.strip()
+            return text_
+
         def reply(audio, t_end: float, gen_id: int):
             def cancelled() -> bool:
                 return gen_id != st["gen"] or st["closed"]
 
-            try:
-                t_stt = time.monotonic()
-                text = stt.generate(mx.array(audio)).text.strip()
-                stt_ms = (time.monotonic() - t_stt) * 1000
-                if not text or cancelled():
-                    set_state("listening")
-                    return
-                send(5, text.encode())
-                spoke_at = t_end - audio.shape[0] / STT_RATE - recorder.start_mono
-                recorder.add_segment(spoke_at, "You", text)
-                messages.append({"role": "user", "content": text})
+            spoken: list[str] = []
+            first_audio = None
+            marks: dict = {}
+            perf = {"tts_s": 0.0, "audio_s": 0.0, "tokens": 0, "llm_s": 0.0, "new_tokens": 0}
 
-                prompt = tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=True, tokenize=True, enable_thinking=False)
-                prompt = list(prompt)
-                # Reuse the KV cache for the shared prefix of the conversation.
+            def speak(chunk: str) -> bool:
+                nonlocal first_audio
+                chunk = clean_for_speech(chunk)
+                if not chunk:
+                    return True
+                if "chunk1" not in marks:
+                    marks["chunk1"] = time.monotonic()
+                t_tts = time.monotonic()
+                for res in tts.generate(chunk, voice=voice):
+                    if cancelled():
+                        return False
+                    pcm = np.array(res.audio).reshape(-1)
+                    pcm16 = (np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
+                    now = time.monotonic()
+                    if first_audio is None:
+                        first_audio = now
+                        set_state("speaking")
+                    st["play_until"] = max(st["play_until"], now) + pcm.shape[0] / TTS_RATE
+                    perf["audio_s"] += pcm.shape[0] / TTS_RATE
+                    send(1, pcm16)
+                send(2, (chunk + " ").encode())
+                spoken.append(chunk)
+                perf["tts_s"] += time.monotonic() - t_tts
+                return True
+
+            def generate(live: bool = True) -> tuple[str, list[dict]]:
+                """Stream one assistant message; speak it sentence by sentence.
+                Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
+                prompt = list(tokenizer.apply_chat_template(
+                    messages, tools=TOOLS if args.tools else None, add_generation_prompt=True, tokenize=True,
+                    enable_thinking=False))
                 cached = st["cache_tokens"]
                 common = 0
-                for a, b in zip(cached, prompt):
-                    if a != b:
+                for x, y in zip(cached, prompt):
+                    if x != y:
                         break
                     common += 1
                 common = min(common, len(prompt) - 1)
                 if len(cached) > common:
                     trim_prompt_cache(st["cache"], len(cached) - common)
                 feed = prompt[common:]
-
+                perf["new_tokens"] += len(feed)
                 sampler = make_sampler(temp=args.temp, top_p=0.9)
-                spoken: list[str] = []
                 full = ""
                 buf = ""
-                first_audio = None
-                n_tok = 0
-                t_llm = time.monotonic()
-                marks = {"stt_done": t_stt + stt_ms / 1000}
-                perf = {"tts_s": 0.0, "audio_s": 0.0}
                 in_think = False
-
-                def speak(chunk: str) -> bool:
-                    nonlocal first_audio
-                    chunk = clean_for_speech(chunk)
-                    if not chunk:
-                        return True
-                    if "chunk1" not in marks:
-                        marks["chunk1"] = time.monotonic()
-                    t_tts = time.monotonic()
-                    for res in tts.generate(chunk, voice=voice):
-                        if cancelled():
-                            return False
-                        pcm = np.array(res.audio).reshape(-1)
-                        pcm16 = (np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
-                        now = time.monotonic()
-                        if first_audio is None:
-                            first_audio = now
-                            set_state("speaking")
-                        st["play_until"] = max(st["play_until"], now) + pcm.shape[0] / TTS_RATE
-                        perf["audio_s"] += pcm.shape[0] / TTS_RATE
-                        send(1, pcm16)
-                    send(2, (chunk + " ").encode())
-                    spoken.append(chunk)
-                    perf["tts_s"] += time.monotonic() - t_tts
-                    return True
-
+                in_tool = False
+                t0 = time.monotonic()
+                tts_before = perf["tts_s"]
                 for resp in stream_generate(lm, tokenizer, feed, max_tokens=args.max_tokens,
                                             sampler=sampler, prompt_cache=st["cache"]):
-                    n_tok += 1
+                    perf["tokens"] += 1
                     full += resp.text
                     if cancelled():
                         break
+                    if in_tool:
+                        continue
                     piece = resp.text
                     if "<think>" in piece:
                         in_think = True
@@ -397,45 +464,162 @@ def main() -> None:
                         else:
                             continue
                     buf += piece
+                    if "<tool_call>" in buf:
+                        buf, _ = buf.split("<tool_call>", 1)
+                        in_tool = True
+                    if not live:
+                        continue
                     while True:
                         chunk, buf = pop_sentence(buf, first=not spoken)
-                        if chunk is None:
-                            break
-                        if not speak(chunk):
+                        if chunk is None or not speak(chunk):
                             break
                     if cancelled():
                         break
-                if not cancelled() and buf.strip():
+                if live and not cancelled() and buf.strip():
                     speak(buf)
-                llm_s = time.monotonic() - t_llm
-
-                # Track exactly which tokens the KV cache now holds.
+                perf["llm_s"] += (time.monotonic() - t0) - (perf["tts_s"] - tts_before)
                 offset = st["cache"][0].offset if hasattr(st["cache"][0], "offset") else None
                 gen_tokens = tokenizer.encode(full, add_special_tokens=False) if full else []
-                all_tokens = prompt + gen_tokens
-                st["cache_tokens"] = all_tokens[:offset] if offset is not None else []
+                st["cache_tokens"] = (prompt + gen_tokens)[:offset] if offset is not None else []
                 if offset is None:
-                    st["cache"] = make_prompt_cache(lm)
+                    st["cache"] = shared["cache"] = make_prompt_cache(lm)
+                shared["tokens"] = st["cache_tokens"]
+                calls = parse_tool_calls(full)
+                text = re.sub(r"<think>.*?</think>", "", full, flags=re.S)
+                text = text.split("<tool_call>", 1)[0].strip()
+                return text, calls
 
-                said = " ".join(spoken).strip()
+            def tool_message(payload: dict) -> dict:
+                return {"role": "tool", "content": json.dumps(payload, ensure_ascii=False)[:4000]}
+
+            try:
+                t_stt = time.monotonic()
+                text = transcribe(audio)
+                stt_ms = (time.monotonic() - t_stt) * 1000
+                marks["stt_done"] = time.monotonic()
+                if not text or cancelled():
+                    emit("TURN", f"skipped: text={text!r} cancelled={cancelled()}")
+                    set_state("listening")
+                    return
+                send(5, text.encode())
+                spoke_at = t_end - audio.shape[0] / STT_RATE - recorder.start_mono
+                recorder.add_segment(spoke_at, "You", text)
+
+                pending = st.pop("pending", None)
+                confirmed_ok = False
+                if pending is not None:
+                    verdict = classify_reply(text)
+                    if verdict == "yes":
+                        result = run_tool(pending["name"], pending["args"], f'confirmed ("{text}")')
+                        confirmed_ok = bool(result.get("ok"))
+                        messages.append(tool_message({"user_said": text, "confirmed": True, "result": result}))
+                    else:
+                        recorder.tool_log.append({"time": time.strftime("%H:%M:%S"), "tool": pending["name"],
+                                                  "args": {k: v for k, v in pending["args"].items() if not k.startswith("_")},
+                                                  "confirm": f'declined ("{text}")' if verdict == "no" else f'not confirmed ("{text}")',
+                                                  "result": "not run"})
+                        emit("TOOLCALL", f"{pending['name']} declined by user: {text}")
+                        messages.append(tool_message({"user_said": text, "confirmed": False,
+                                                      "result": "Not run. Nothing was changed."}))
+                        if verdict == "unclear":
+                            # They moved on to something else: handle it as a new request.
+                            messages.append({"role": "user", "content": text})
+                else:
+                    messages.append({"role": "user", "content": text})
+
+                t_llm = time.monotonic()
+                said_parts: list[str] = []
+                used_tool = False
+                nudged = False
+                acted = confirmed_ok
+
+                def say(text_: str) -> None:
+                    before_ = len(spoken)
+                    rest = text_
+                    while True:
+                        chunk, rest = pop_sentence(rest, first=not spoken)
+                        if chunk is None or not speak(chunk):
+                            break
+                    if rest.strip() and not cancelled():
+                        speak(rest)
+                    said_parts.extend(spoken[before_:])
+
+                for _round in range(5):  # at most a few tool calls per turn
+                    # The first answer streams live for speed. After a tool has run, the follow-up is
+                    # checked before it is spoken, so a claim that something was done can be caught.
+                    live = not used_tool or acted  # after a successful action, its claims are true
+                    before = len(spoken)
+                    reply_text, calls = generate(live)
+                    said_parts += spoken[before:]
+                    if cancelled():
+                        break
+                    if calls:
+                        if not live and reply_text:
+                            say(reply_text)
+                    else:
+                        # A claim is only suspicious if no action tool actually ran in this turn.
+                        suspicious = args.tools and not acted and (
+                            claims_action(reply_text) or (used_tool and announces_action(reply_text)))
+                        if suspicious and not nudged:
+                            nudged = True
+                            emit("TOOLCALL", f"nudge: reply announced an action without a tool call: {reply_text[:120]!r}")
+                            if live and claims_action(reply_text):
+                                say("Sorry, I haven't actually done that yet.")
+                            messages.append({"role": "assistant", "content": reply_text})
+                            messages.append({"role": "user", "content": NUDGE})
+                            used_tool = True  # keep the next answer buffered
+                            continue
+                        if suspicious and nudged and claims_action(reply_text):
+                            emit("TOOLCALL", "still no tool call after nudge: said so honestly")
+                            say(HONEST)
+                            messages.append({"role": "assistant", "content": HONEST})
+                            break
+                        if not live and reply_text:
+                            say(reply_text)
+                        if reply_text:
+                            messages.append({"role": "assistant", "content": reply_text})
+                        break
+                    used_tool = True
+                    call = calls[0]
+                    name, targs = call["name"], dict(call["arguments"])
+                    messages.append({"role": "assistant", "content": reply_text,
+                                     "tool_calls": [{"type": "function",
+                                                     "function": {"name": name, "arguments": targs}}]})
+                    if name in NEEDS_CONFIRMATION:
+                        for key in ("event_id", "reminder_id"):
+                            if targs.get(key) in st["labels"]:
+                                targs["_label"] = st["labels"][targs[key]]
+                        st["pending"] = {"name": name, "args": targs}
+                        say(describe(name, targs))
+                        emit("TOOLCALL", f"{name} {json.dumps(call['arguments'])} awaiting confirmation")
+                        break
+                    hold = ON_HOLD.get(name)
+                    if hold and not spoken:
+                        say(hold)
+                    result = run_tool(name, targs, "not needed (read-only or navigation)")
+                    if name in ACTION_TOOLS and result.get("ok"):
+                        acted = True
+                    messages.append(tool_message(result))
+
+                said = " ".join(said_parts).strip()
                 interrupted = cancelled() and not st["closed"]
                 if said:
                     recorder.add_segment((first_audio or time.monotonic()) - recorder.start_mono, "Aria",
                                          said + (" [interrupted]" if interrupted else ""))
-                    # Keep the model's exact words when it finished, so the next prompt's
-                    # prefix matches the KV cache and only the new turn is processed.
-                    raw = re.sub(r"<think>.*?</think>", "", full, flags=re.S).strip()
-                    messages.append({"role": "assistant",
-                                     "content": (said + " ...") if interrupted else (raw or said)})
+                if interrupted and messages and messages[-1]["role"] == "user":
+                    messages.append({"role": "assistant", "content": (said + " ...") if said else "..."})
                 if first_audio is not None:
                     lat = first_audio - t_end
                     st["latencies"].append(lat)
+                    llm_s = max(perf["llm_s"], 1e-6)
                     emit("LATENCY", f"end-of-speech to first audio {lat:.2f}s = wait for pause "
                                     f"{t_stt - t_end:.2f} + stt {stt_ms / 1000:.2f} + llm to first clause "
                                     f"{marks.get('chunk1', first_audio) - marks['stt_done']:.2f} + tts "
-                                    f"{first_audio - marks.get('chunk1', first_audio):.2f} (stt {stt_ms:.0f} ms, "
-                                    f"prompt {len(feed)} new tokens, {n_tok} tokens, llm {n_tok / max(llm_s - perf['tts_s'], 1e-6):.1f} tok/s, "
-                                    f"tts {perf['tts_s']:.1f}s for {perf['audio_s']:.1f}s audio, total {llm_s:.1f}s){' interrupted' if interrupted else ''}")
+                                    f"{first_audio - marks.get('chunk1', first_audio):.2f} (prompt "
+                                    f"{perf['new_tokens']} new tokens, {perf['tokens']} tokens, llm "
+                                    f"{perf['tokens'] / llm_s:.1f} tok/s, tts {perf['tts_s']:.1f}s for "
+                                    f"{perf['audio_s']:.1f}s audio, total {time.monotonic() - t_llm:.1f}s)"
+                                    f"{' interrupted' if interrupted else ''}")
             finally:
                 if gen_id == st["gen"]:
                     st["busy"] = False
@@ -462,16 +646,11 @@ def main() -> None:
                     except OSError as exc:
                         emit("ERROR", f"autosave failed: {exc}")
 
-        def prime():
-            """Prefill the system prompt now so the first turn only processes the user's words."""
-            sys_tokens = list(tokenizer.apply_chat_template(
-                messages, add_generation_prompt=False, tokenize=True, enable_thinking=False))
-            for _ in stream_generate(lm, tokenizer, sys_tokens, max_tokens=1, prompt_cache=st["cache"]):
-                pass
-            off = st["cache"][0].offset
-            st["cache_tokens"] = sys_tokens[:off]
+        def prime_session():
+            prime(messages)
+            st["cache_tokens"] = shared["tokens"]
 
-        gpu_jobs.put(prime)
+        gpu_jobs.put(prime_session)
         emit("STATUS", f"session start mode=Aria voice={voice}")
         await ws.send_bytes(b"\x00")
         set_state("listening")
@@ -482,11 +661,7 @@ def main() -> None:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY and msg.data and msg.data[0] == 1:
                     pcm = np.frombuffer(msg.data[1:], dtype="<i2").astype(np.float32) / 32768.0
-                    carry = np.concatenate((carry, pcm))
-                    n = (carry.shape[0] // 3) * 3
-                    if n:
-                        mic_q.put(resample_poly(carry[:n], 2, 3).astype(np.float32))
-                        carry = carry[n:]
+                    mic_q.put(pcm)
                 elif msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)

@@ -68,7 +68,8 @@ final class ModelProcess: ObservableObject {
             "--vault", Vault.url.path,
             "--ui-dir", ui,
             "--parent-pid", String(getpid()),
-        ] + (mode == .myra ? ["-q", "4", "--stt-python", pythonPath(for: .aria)] : []) + [
+        ] + (mode == .myra ? ["-q", "4", "--stt-python", pythonPath(for: .aria)]
+                           : ["--llm", UserDefaults.standard.string(forKey: "ariaBrain") ?? Brain.fast.rawValue]) + [
             "--voice", voice,
             "--text-prompt", persona,
         ]
@@ -178,6 +179,24 @@ final class ModelProcess: ObservableObject {
             let msg = String(line.dropFirst("AIR_ERROR ".count))
             if case .ready = state { return }
             state = .failed(msg)
+        } else if line.hasPrefix("AIR_TOOL ") {
+            // AIR_TOOL <id> {"name": ..., "args": {...}}  ->  stdin: TOOL_RESULT <id> <json>
+            let rest = line.dropFirst("AIR_TOOL ".count)
+            guard let space = rest.firstIndex(of: " ") else { return }
+            let callID = String(rest[..<space])
+            let payload = Data(rest[rest.index(after: space)...].utf8)
+            let req = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] ?? [:]
+            let name = req["name"] as? String ?? ""
+            let args = req["args"] as? [String: Any] ?? [:]
+            let pipe = stdinPipe
+            Task { @MainActor in
+                let result = await ToolRunner.shared.run(name: name, args: args)
+                let data = (try? JSONSerialization.data(withJSONObject: result)) ?? Data("{}".utf8)
+                var line = Data("TOOL_RESULT \(callID) ".utf8)
+                line.append(data)
+                line.append(0x0A)
+                try? pipe?.fileHandleForWriting.write(contentsOf: line)
+            }
         } else if line.hasPrefix("AIR_SESSION_SAVED ") {
             sessionsChanged += 1
         }

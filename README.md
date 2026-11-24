@@ -82,6 +82,28 @@ python -m personaplex_mlx.offline \
 - Each conversation is saved as a Markdown note in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md`. Each note has the mode and model ids in its frontmatter and timestamped `You:` / `Myra:` / `Aria:` lines. `Air Index.md` lists every session. The History tab reads these notes and can open any of them in Obsidian.
 - Use headphones.
 
+### Aria's tools
+
+Aria can act on the Mac using the language model's tool calling. The app runs the tools in Swift (`macos/Air/Sources/Tools.swift`); the definitions and the confirmation wording are in `server/aria_tools.py`.
+
+| Area | Runs directly | Needs your spoken "yes" first |
+| --- | --- | --- |
+| Apps | list running apps, open, switch to | quit |
+| Calendar (EventKit) | read a day or a week | create, move, delete events |
+| Reminders (EventKit) | read lists and open reminders | add, complete, delete |
+| Air vault | search and read past conversations | create or append a note in `Air/Notes` |
+| Files | find (Spotlight), open, reveal in Finder | (no file deletion at all) |
+| System | date and time, battery, read volume | set volume, mute or unmute |
+| Music | now playing, play, pause, next, previous | |
+| Shortcuts | list | run a shortcut |
+| Mail / Messages | unread mail count and senders (Mail must be open) | send email, send message |
+
+- For anything that needs a "yes", Aria reads back exactly what she will do. Only a clear yes runs it; "no" or anything else cancels it.
+- Every tool call (time, tool, arguments, confirmation, result) is logged in the session's Obsidian note.
+- macOS asks for Calendar, Reminders or Automation access the first time a tool needs it. Aria says so and asks you to try again.
+- Not available: brightness, Focus or Do Not Disturb (you can use a Shortcut for these), and unread iMessages, which macOS doesn't expose without Full Disk Access.
+- If Aria says she did something without calling a tool, she is asked once to make the call. If she still doesn't, she says she hasn't done it.
+
 Build and install (needs Xcode):
 
 ```bash

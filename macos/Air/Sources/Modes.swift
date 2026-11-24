@@ -16,7 +16,9 @@ enum Mode: String, CaseIterable, Identifiable {
     var modelDescription: String {
         switch self {
         case .myra: return "nvidia/personaplex-7b-v1 · 4-bit"
-        case .aria: return "Qwen3-8B-4bit · parakeet-tdt-0.6b-v2 · Kokoro-82M · silero-vad (mlx-community)"
+        case .aria:
+            let llm = (UserDefaults.standard.string(forKey: "ariaBrain") ?? Brain.fast.rawValue).split(separator: "/").last ?? ""
+            return "\(llm) · parakeet-tdt-0.6b-v2 · Kokoro-82M (mlx-community) · energy VAD"
         }
     }
     var script: String { self == .myra ? "quick_server.py" : "aria_server.py" }
@@ -30,6 +32,18 @@ enum Mode: String, CaseIterable, Identifiable {
     var voiceFooter: String {
         self == .myra ? "NAT voices are natural recordings, VAR voices add variety. Changes apply to the next conversation."
                       : "Kokoro voices. Heart is the most natural; American (af) and British (bf) accents. Changes apply to the next conversation."
+    }
+}
+
+/// Aria's language model. Fast is the default; Deeper is slower but a little more thorough.
+enum Brain: String, CaseIterable, Identifiable {
+    case fast = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+    case deeper = "mlx-community/Qwen3-8B-4bit"
+    var id: String { rawValue }
+    var label: String { self == .fast ? "Fast · Qwen3 4B" : "Deeper · Qwen3 8B" }
+    var footer: String {
+        self == .fast ? "About 1-2 s to the first word, about 30 tokens/s on this Mac."
+                      : "About 2-3.5 s to the first word, about 15 tokens/s. Restarts Aria when changed."
     }
 }
 
@@ -83,11 +97,13 @@ final class Prefs: ObservableObject {
     private let d = UserDefaults.standard
 
     @Published var mode: Mode { didSet { d.set(mode.rawValue, forKey: "mode") } }
+    @Published var brain: Brain { didSet { d.set(brain.rawValue, forKey: "ariaBrain") } }
     @Published private var voices: [Mode: String]
     @Published private var personas: [Mode: String]
 
     init() {
         mode = Mode(rawValue: d.string(forKey: "mode") ?? "") ?? .myra
+        brain = Brain(rawValue: d.string(forKey: "ariaBrain") ?? "") ?? .fast
         var v: [Mode: String] = [:]
         var p: [Mode: String] = [:]
         for m in Mode.allCases {

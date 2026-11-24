@@ -15,6 +15,11 @@
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key><string>Air listens to your voice so the on-device speech model can talk with you. Audio never leaves this Mac.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key><string>Aria reads and, after you say yes, changes your calendar events when you ask her to.</string>
+	<key>NSCalendarsUsageDescription</key><string>Aria reads and, after you say yes, changes your calendar events when you ask her to.</string>
+	<key>NSRemindersFullAccessUsageDescription</key><string>Aria reads and, after you say yes, changes your reminders when you ask her to.</string>
+	<key>NSRemindersUsageDescription</key><string>Aria reads and, after you say yes, changes your reminders when you ask her to.</string>
+	<key>NSAppleEventsUsageDescription</key><string>Aria controls apps such as Music, Mail and Messages only when you ask her to, and asks before sending anything.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key><true/>

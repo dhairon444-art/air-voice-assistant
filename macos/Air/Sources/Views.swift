@@ -50,6 +50,9 @@ struct ContentView: View {
         }
         .onChange(of: prefs.voice) { _, v in web.updateConfig(mode: prefs.mode, voice: v, persona: prefs.persona) }
         .onChange(of: prefs.persona) { _, p in web.updateConfig(mode: prefs.mode, voice: prefs.voice, persona: p) }
+        .onChange(of: prefs.brain) { _, _ in
+            if prefs.mode == .aria { model.restart(mode: .aria, voice: prefs.voice, persona: prefs.persona) }
+        }
         .onChange(of: prefs.mode) { _, m in
             // Only one mode's models are loaded at a time: switching restarts the model process.
             model.restart(mode: m, voice: prefs.voice, persona: prefs.persona)
@@ -226,6 +229,17 @@ struct SettingsView: View {
             } footer: {
                 Text(prefs.mode.tagline + (web.live ? " End the conversation to switch modes." : ""))
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            if prefs.mode == .aria {
+                Section {
+                    Picker("Brain", selection: $prefs.brain) {
+                        ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
+                    }
+                    .disabled(web.live)
+                } footer: {
+                    Text(prefs.brain.footer + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section {
                 Picker("Voice", selection: $prefs.voice) {
