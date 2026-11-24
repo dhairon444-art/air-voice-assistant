@@ -24,12 +24,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.setValue(false, forKey: "drawsBackground")
     }
 
-    func load(port: Int, voice: String, persona: String) {
+    func load(port: Int, voice: String, persona: String, personality: String) {
         guard loadedPort != port else { return }
         loadedPort = port
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
-        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(Self.configJSON(voice: voice, persona: persona));",
+        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(Self.configJSON(voice: voice, persona: persona, personality: personality));",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
     }
@@ -40,8 +40,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.loadHTMLString("", baseURL: nil)
     }
 
-    func updateConfig(voice: String, persona: String) {
-        let json = Self.configJSON(voice: voice, persona: persona)
+    func updateConfig(voice: String, persona: String, personality: String) {
+        let json = Self.configJSON(voice: voice, persona: persona, personality: personality)
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
         ucc.addUserScript(WKUserScript(source: "window.airConfig = \(json);",
@@ -49,9 +49,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.evaluateJavaScript("window.airSetConfig && window.airSetConfig(\(json))")
     }
 
-    static func configJSON(voice: String, persona: String) -> String {
+    static func configJSON(voice: String, persona: String, personality: String) -> String {
         let obj: [String: Any] = ["mode": "aria", "name": "Aria", "voice": voice, "persona": persona,
-                                  "voices": Voices.all.map { ["id": $0.id, "name": $0.name, "note": $0.note] }]
+                                  "voices": Voices.all.map { ["id": $0.id, "name": $0.name, "note": $0.note] },
+                                  "personality": personality,
+                                  "personalities": Personas.presets.map { ["id": $0.id, "name": $0.name, "note": $0.summary] }
+                                      + [["id": Personas.customID, "name": "Custom", "note": "your own text, edit in Settings"]]]
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return String(decoding: data, as: UTF8.self)
     }

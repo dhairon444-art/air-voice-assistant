@@ -1,4 +1,4 @@
-// Renders Myra's app icon (squircle gradient + sound-wave bars) to a 1024px PNG.
+// Renders Air's app icon (squircle gradient + sound-wave bars) to a 1024px PNG.
 import AppKit
 
 let size: CGFloat = 1024

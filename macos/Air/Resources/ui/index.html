@@ -66,6 +66,7 @@
   <div class="hint" role="note" id="hint">🎧 <b>Use headphones.</b> <span id="hintText"></span></div>
   <main>
     <section class="stage">
+      <div class="pickrow" id="personaRow" aria-label="Personality"></div>
       <div class="pickrow" id="voiceRow" aria-label="Voice"></div>
       <button id="orb" class="orb" aria-label="Start conversation"><span class="ring" id="ring"></span><span id="orbLabel">Start</span></button>
       <div class="status" id="status">Ready. Press Start and talk.</div>
@@ -92,7 +93,7 @@
   const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
   const setStatus = (t) => { statusEl.textContent = t; };
   const renderMeta = () => {
-    meta.textContent = `${cfg.name} · voice ${cfg.voice} · ${cfg.persona ? cfg.persona : 'default persona'}`;
+    meta.textContent = '';
     $('aiLabel').firstChild.textContent = cfg.name;
     $('hintText').textContent = isAria()
       ? `${cfg.name} stops talking when you start, so through speakers it may interrupt itself.`
@@ -102,7 +103,31 @@
       ? 'Both sides of the conversation appear here. Pause briefly when you finish and Aria replies.'
       : `The text of what ${cfg.name} says appears here. Your own speech is not transcribed in this mode.`;
   };
-  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); renderVoices(); };
+  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); renderVoices(); renderPersonas(); };
+
+  // ---- personality picker ----
+  function renderPersonas() {
+    const row = $('personaRow');
+    row.innerHTML = '<span class="lbl">Personality</span>';
+    (cfg.personalities || []).forEach((p) => {
+      const pill = document.createElement('span');
+      pill.className = 'pill' + (p.id === cfg.personality ? ' on' : '');
+      pill.style.paddingRight = '12px';
+      pill.title = p.note;
+      pill.setAttribute('role', 'button');
+      pill.innerHTML = `<span>${p.name}</span>`;
+      pill.addEventListener('click', () => {
+        if (live) return;
+        cfg.personality = p.id;
+        post({ type: 'set', key: 'personality', value: p.id });
+        renderPersonas();
+      });
+      row.appendChild(pill);
+    });
+    const cur = (cfg.personalities || []).find((p) => p.id === cfg.personality);
+    if (cur) { const n = document.createElement('small'); n.style.color = 'var(--muted)'; n.textContent = cur.note; row.appendChild(n); }
+    row.classList.toggle('locked', live);
+  }
 
   // ---- voice picker (five best Kokoro voices, with previews) ----
   let previewAudio = null;
@@ -142,6 +167,7 @@
   }
   renderMeta();
   renderVoices();
+  renderPersonas();
 
   function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 
@@ -256,7 +282,7 @@
     player.port.onmessage = (e) => { $('outBar').style.width = Math.min(100, e.data.level * 400) + '%'; };
     player.connect(ctx.destination);
     post({ type: 'state', state: 'live' });
-    renderVoices();
+    renderVoices(); renderPersonas();
   }
 
   function stop(fromClose) {
@@ -273,7 +299,7 @@
     $('lag').style.display = 'none';
     orb.classList.remove('live', 'busy'); label.textContent = 'Start';
     orb.setAttribute('aria-label', 'Start conversation');
-    renderVoices();
+    renderVoices(); renderPersonas();
     if (wasLive) {
       setStatus('Conversation ended. Saved to the Air vault in Obsidian (see History).');
       post({ type: 'state', state: 'ended' });

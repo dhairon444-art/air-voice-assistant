@@ -26,6 +26,7 @@ echo "==> Resources"
 sed -e "s#__ARIA_PYTHON__#${ARIA_PYTHON}#" "$HERE/Resources/Info.plist" > "$APP/Contents/Info.plist"
 cp -R "$HERE/Resources/ui" "$APP/Contents/Resources/ui"
 cp "$HERE"/server/*.py "$APP/Contents/Resources/server/"
+cp "$HERE/Resources/personas.json" "$APP/Contents/Resources/personas.json"
 
 echo "==> Icon"
 ICONSET="$BUILD/AppIcon.iconset"

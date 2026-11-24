@@ -1,7 +1,7 @@
 // Audio worklets for Air: microphone capture -> 24 kHz Int16, and 24 kHz playback.
 const MODEL_RATE = 24000;
 
-class MyraCapture extends AudioWorkletProcessor {
+class AirCapture extends AudioWorkletProcessor {
   constructor() {
     super();
     this.step = sampleRate / MODEL_RATE; // input samples per output sample
@@ -43,7 +43,7 @@ class MyraCapture extends AudioWorkletProcessor {
   }
 }
 
-class MyraPlayer extends AudioWorkletProcessor {
+class AirPlayer extends AudioWorkletProcessor {
   constructor() {
     super();
     this.step = MODEL_RATE / sampleRate;
@@ -97,5 +97,5 @@ class MyraPlayer extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('air-capture', MyraCapture);
-registerProcessor('air-player', MyraPlayer);
+registerProcessor('air-capture', AirCapture);
+registerProcessor('air-player', AirPlayer);

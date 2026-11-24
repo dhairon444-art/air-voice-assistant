@@ -172,7 +172,7 @@ def write_index(vault: Path) -> None:
             label = datetime.strptime(p.stem[:15], "%Y-%m-%d %H%M").strftime("%a %d %b %Y, %H:%M")
         except ValueError:
             label = p.stem
-        mode = fm.get("mode", "Myra")
+        mode = fm.get("mode", "Aria")
         modes[mode] = modes.get(mode, 0) + 1
         try:
             total += int(fm.get("duration_seconds", "0"))
@@ -225,7 +225,7 @@ def write_index(vault: Path) -> None:
 class SessionRecorder:
     """Collects both sides of a conversation and keeps a Markdown note up to date.
 
-    `mode` is the user-facing mode name (e.g. "Myra" or "Smart"); `assistant` is the
+    `mode` is the user-facing mode name (e.g. "Aria"); `assistant` is the
     speaker label used for the model's lines.
     """
 

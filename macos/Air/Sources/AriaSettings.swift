@@ -28,16 +28,28 @@ enum Voices {
     static func valid(_ v: String?) -> String { all.contains { $0.id == v } ? v! : defaultVoice }
 }
 
-/// Personality presets (rewritten as layered specs later in this round).
+/// Personalities: layered specs (identity, ranked values, epistemic and anti-sycophancy rules,
+/// spoken style, memory and tool rules, examples) shipped in Resources/personas.json. The owner
+/// can edit each one in Settings; edits are stored per personality. "Custom" is free text.
+struct Personality: Identifiable, Decodable {
+    let id: String
+    let name: String
+    let summary: String
+    let text: String
+}
+
 enum Personas {
-    static let templates: [(name: String, text: String)] = [
-        ("Warm companion",
-         "You enjoy having a good conversation. Your name is Aria, and you are a warm, kind and encouraging friend who is genuinely curious about the person you are talking to. Have a relaxed, friendly conversation. Give full, thoughtful answers of several sentences, explain things with examples, share your own view, and then ask a gentle follow-up question. Always be patient, supportive and positive; never sarcastic, dismissive or rude."),
-    ]
-    static var defaultText: String { templates[0].text }
-    static func presetName(for text: String) -> String {
-        templates.first { $0.text == text }?.name ?? "Custom"
-    }
+    static let presets: [Personality] = {
+        guard let url = Bundle.main.url(forResource: "personas", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let list = try? JSONDecoder().decode([Personality].self, from: data) else { return [] }
+        return list
+    }()
+    static let defaultID = "analyst"
+    static let customID = "custom"
+    static let customStarter = "IDENTITY\nYou are Aria. Describe who Aria should be here.\n\nVALUES, IN ORDER\n1. Truth. 2. Usefulness. 3. Comfort.\n\nRULES\n- Correct me plainly when I'm wrong. Never flatter me."
+    static func preset(_ id: String) -> Personality? { presets.first { $0.id == id } }
+    static func name(_ id: String) -> String { id == customID ? "Custom" : (preset(id)?.name ?? id) }
 }
 
 /// User settings, stored in UserDefaults.
@@ -47,11 +59,36 @@ final class Prefs: ObservableObject {
 
     @Published var voice: String { didSet { d.set(voice, forKey: "ariaVoice") } }
     @Published var brain: Brain { didSet { d.set(brain.rawValue, forKey: "ariaBrain") } }
-    @Published var persona: String { didSet { d.set(persona, forKey: "ariaPersona") } }
+    @Published var personality: String { didSet { d.set(personality, forKey: "ariaPersonality") } }
+    /// Edited personality texts by id (only those the owner changed), plus the custom text.
+    @Published private var edited: [String: String] { didSet { d.set(edited, forKey: "ariaPersonalityTexts") } }
 
     init() {
         voice = Voices.valid(d.string(forKey: "ariaVoice"))
         brain = Brain(rawValue: d.string(forKey: "ariaBrain") ?? "") ?? .fast
-        persona = d.string(forKey: "ariaPersona") ?? Personas.defaultText
+        var e = d.dictionary(forKey: "ariaPersonalityTexts") as? [String: String] ?? [:]
+        // Migrate the single persona text from the previous version into "Custom" if the owner wrote one.
+        if let old = d.string(forKey: "ariaPersona"), !old.hasPrefix("You enjoy having a good conversation. Your name is"),
+           e[Personas.customID] == nil {
+            e[Personas.customID] = old
+        }
+        edited = e
+        personality = d.string(forKey: "ariaPersonality") ?? Personas.defaultID
+        // Leftovers from the earlier two-mode app (old mode, voice and persona keys).
+        for old in ["ariaPersona", "persona", "voice", "mode"] { d.removeObject(forKey: old) }
     }
+
+    func text(for id: String) -> String {
+        if let t = edited[id] { return t }
+        if id == Personas.customID { return Personas.customStarter }
+        return Personas.preset(id)?.text ?? ""
+    }
+    func setText(_ t: String, for id: String) {
+        if let p = Personas.preset(id), p.text == t { edited.removeValue(forKey: id) } else { edited[id] = t }
+    }
+    func isEdited(_ id: String) -> Bool { id != Personas.customID && edited[id] != nil }
+    func reset(_ id: String) { edited.removeValue(forKey: id) }
+
+    /// The text sent to the model.
+    var persona: String { text(for: personality) }
 }

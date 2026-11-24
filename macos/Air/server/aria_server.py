@@ -8,7 +8,7 @@
 * if you start talking while Aria speaks, playback stops and Aria listens
 * both sides of the conversation are saved to the Air Obsidian vault
 
-WebSocket protocol (same framing as the Myra server, plus a few kinds):
+WebSocket protocol:
   client -> server  0x01 + int16 PCM @ 24 kHz      microphone
                     text JSON {"type":"end_turn"}  manual "Done talking"
   server -> client  0x00                           ready
@@ -41,13 +41,16 @@ from aria_tools import (NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOO
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         ACTION_TOOLS)
 
-DEFAULT_PERSONA = (
-    "You enjoy having a good conversation. Your name is Aria, and you are a warm, kind and "
-    "encouraging friend who is genuinely curious about the person you are talking to. Have a "
-    "relaxed, friendly conversation. Give full, thoughtful answers of several sentences, explain "
-    "things with examples, share your own view, and then ask a gentle follow-up question. Always "
-    "be patient, supportive and positive; never sarcastic, dismissive or rude."
-)
+def _default_persona() -> str:
+    """The Analyst personality from Resources/personas.json (shipped next to server/)."""
+    try:
+        presets = json.loads((Path(__file__).resolve().parent.parent / "personas.json").read_text())
+        return next(p["text"] for p in presets if p["id"] == "analyst")
+    except Exception:
+        return "You are Aria. Be accurate, direct and never flattering; correct the user plainly when they are wrong."
+
+
+DEFAULT_PERSONA = _default_persona()
 # Always appended: the reply is spoken, not read.
 SPOKEN_STYLE = (
     "You are talking out loud with the user through a voice interface. Reply in natural spoken "

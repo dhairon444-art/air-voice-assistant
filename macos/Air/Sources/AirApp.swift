@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         web.onSetting = { [weak self] key, value in
             guard let self else { return }
             if key == "voice" { self.prefs.voice = Voices.valid(value) }
+            if key == "personality", value == Personas.customID || Personas.preset(value) != nil {
+                self.prefs.personality = value
+            }
         }
         let root = ContentView().environmentObject(model).environmentObject(web).environmentObject(prefs)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),

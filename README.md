@@ -69,17 +69,15 @@ python -m personaplex_mlx.offline \
 
 ## Air: macOS app
 
-`macos/Air` is a native macOS app for talking to local speech models. It has two modes; pick one in Settings. Only one mode's models are loaded at a time.
+`macos/Air` is a native macOS voice assistant, Aria, that runs entirely on the Mac. The pipeline: energy-based turn detection, Parakeet TDT 0.6B speech-to-text, a local Qwen3 language model (4-bit, streamed), then Kokoro-82M text-to-speech. About 1-2 s passes from the end of your speech to the first audio. You can talk at any time to interrupt, and both sides are transcribed.
 
-| Mode | How it works | Notes |
-| --- | --- | --- |
-| **Myra** | PersonaPlex 7B (this repo), full-duplex speech-to-speech | Very quick turn-taking and short replies. Your side is transcribed with Parakeet after the session. If the Mac slows down from heat, it skips pauses in your audio to catch up. |
-| **Aria** | Pipeline: energy VAD, then Parakeet TDT 0.6B speech-to-text, then Qwen3-4B-Instruct-2507 (4-bit, streamed), then Kokoro-82M text-to-speech (`af_heart`) | Fuller, in-depth answers. About 1-2 s from the end of your speech to the first audio. Talk any time to interrupt. Both sides are transcribed live. |
-
-- When the app opens it starts the selected mode's model process, bound to `127.0.0.1` on a free port, with `HF_HUB_OFFLINE=1`. Every file is read from the local Hugging Face cache.
+- When the app opens it starts Aria's model process, bound to `127.0.0.1` on a free port, with `HF_HUB_OFFLINE=1`. Model files are read from the local Hugging Face cache.
 - Quitting the app stops the models. If the app crashes or is force-quit, the model process notices that its parent has gone and exits on its own.
-- Settings hold the mode, the voice and the persona. The persona presets (Warm companion, Thoughtful teacher, Coach) are written in the style of NVIDIA's PersonaPlex prompts, or you can write your own. Settings are stored per mode.
-- Each conversation is saved as a Markdown note in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md`. Each note has the mode and model ids in its frontmatter and timestamped `You:` / `Myra:` / `Aria:` lines. `Air Index.md` lists every session. The History tab reads these notes and can open any of them in Obsidian.
+- **Talk screen:** pick the personality and one of five voices (Heart, Bella, Nicole, Emma, Sarah; each has a preview button).
+- **Settings:** the brain model, and an editor for each personality.
+- **Personalities:** Analyst (default), Sparring Partner and Mentor, plus Custom. Each is a layered spec: identity, ranked values (truth, then usefulness, then comfort), rules for facts and confidence, anti-flattery rules, spoken style, memory and tool use, and example exchanges. They ship in `Resources/personas.json`.
+- **Memory:** after each conversation Aria writes a summary into the session note and adds new facts to `Profile.md` in the vault (goals, preferences, decisions, corrections, open threads). She never deletes lines there, so your edits stay. At the start of a conversation, the profile and the three most recent summaries are loaded. Older summaries are recalled turn by turn with BM25.
+- **Notes:** each conversation is saved in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`) at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md`, with timestamped `You:` and `Aria:` lines. `Air Index.md` lists every session.
 - Use headphones.
 
 ### Aria's tools
@@ -114,7 +112,6 @@ cd macos/Air
 
 Python environments:
 
-- `AIR_MYRA_PYTHON` defaults to `~/personaplex-mlx/.venv/bin/python`. This venv needs this package's dependencies; the app bundles its own copy of `personaplex_mlx`.
 - `AIR_ARIA_PYTHON` defaults to `~/Library/Application Support/Air/venv-smart/bin/python`. This venv has `mlx-audio`, `mlx-lm`, `misaki`, `spacy` with `en_core_web_sm`, `num2words`, `phonemizer-fork`, `espeakng-loader`, `scipy` and `aiohttp`. Install `misaki` without its `[en]` extra to avoid pulling in torch.
 
 Aria's models are `mlx-community/Qwen3-4B-Instruct-2507-4bit`, `mlx-community/parakeet-tdt-0.6b-v2` and `mlx-community/Kokoro-82M-bf16`. Download them once with `huggingface_hub.snapshot_download`. The server log is written to `~/Library/Logs/Air/server.log`.

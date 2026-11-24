@@ -44,12 +44,12 @@ struct ContentView: View {
         }
         .onChange(of: model.state) { _, s in
             switch s {
-            case .ready(let port): web.load(port: port, voice: prefs.voice, persona: prefs.persona)
+            case .ready(let port): web.load(port: port, voice: prefs.voice, persona: prefs.persona, personality: prefs.personality)
             default: web.unload()
             }
         }
-        .onChange(of: prefs.voice) { _, v in web.updateConfig(voice: v, persona: prefs.persona) }
-        .onChange(of: prefs.persona) { _, p in web.updateConfig(voice: prefs.voice, persona: p) }
+        .onChange(of: prefs.voice) { _, v in web.updateConfig(voice: v, persona: prefs.persona, personality: prefs.personality) }
+        .onChange(of: prefs.persona) { _, p in web.updateConfig(voice: prefs.voice, persona: p, personality: prefs.personality) }
         .onChange(of: prefs.brain) { _, b in
             model.restart(voice: prefs.voice, persona: prefs.persona, brain: b)
         }
@@ -226,25 +226,28 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Picker("Preset", selection: Binding(
-                    get: { Personas.presetName(for: prefs.persona) },
-                    set: { name in
-                        if let p = Personas.templates.first(where: { $0.name == name }) { prefs.persona = p.text }
-                    })) {
-                    ForEach(Personas.templates, id: \.name) { Text($0.name).tag($0.name) }
-                    Text("Custom").tag("Custom")
+                Picker("Personality", selection: $prefs.personality) {
+                    ForEach(Personas.presets) { p in Text(p.name).tag(p.id) }
+                    Text("Custom").tag(Personas.customID)
                 }
-                TextEditor(text: $prefs.persona)
-                    .font(.body)
-                    .frame(minHeight: 120)
+                Text(Personas.preset(prefs.personality)?.summary ?? "Your own personality text.")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: Binding(get: { prefs.text(for: prefs.personality) },
+                                         set: { prefs.setText($0, for: prefs.personality) }))
+                    .font(.system(.callout, design: .monospaced))
+                    .frame(minHeight: 260)
                 HStack {
+                    if prefs.isEdited(prefs.personality) {
+                        Text("Edited").font(.caption).foregroundStyle(.orange)
+                    }
                     Spacer()
-                    Button("Reset to default") { prefs.persona = Personas.defaultText }
+                    Button("Reset to default") { prefs.reset(prefs.personality) }
+                        .disabled(!prefs.isEdited(prefs.personality))
                 }
             } header: {
-                Text("Persona")
+                Text("Personality")
             } footer: {
-                Text("Pick a preset or write your own (editing the text makes it Custom). Sent to the model at the start of each conversation.")
+                Text("Each personality is a layered spec: identity, ranked values, rules for facts and honesty, anti-flattery rules, speaking style, memory and tool use, and examples. Edit any part; changes apply from the next conversation. You can also switch personality on the Talk screen.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Conversation history") {

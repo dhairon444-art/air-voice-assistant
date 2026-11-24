@@ -93,7 +93,7 @@ struct SessionNote: Identifiable, Hashable {
             start: fm["start"] ?? "", end: fm["end"] ?? "",
             duration: fm["duration"] ?? "", voice: fm["voice"] ?? "",
             persona: fm["persona"] ?? "", status: fm["status"] ?? "",
-            mode: fm["mode"] ?? "Myra"
+            mode: fm["mode"] ?? "Aria"
         )
     }
 
