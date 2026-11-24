@@ -29,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         let defaults = UserDefaults.standard
+        // Move people still on the original terse default to the new warm preset.
+        if defaults.string(forKey: "persona") == Voices.legacyPersona {
+            defaults.set(Voices.defaultPersona, forKey: "persona")
+        }
         model.start(voice: defaults.string(forKey: "voice") ?? "NATF2",
                     persona: defaults.string(forKey: "persona") ?? Voices.defaultPersona)
 

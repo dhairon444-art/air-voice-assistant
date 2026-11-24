@@ -29,8 +29,11 @@ from datetime import datetime
 from pathlib import Path
 
 DEFAULT_PERSONA = (
-    "You are Myra, a warm and curious companion. Listen carefully, answer clearly "
-    "and keep the conversation natural."
+    "You enjoy having a good conversation. Your name is Myra, and you are a warm, kind and "
+    "encouraging friend who is genuinely curious about the person you are talking to. Have a "
+    "relaxed, friendly conversation. Give full, thoughtful answers of several sentences, explain "
+    "things with examples, share your own view, and then ask a gentle follow-up question. Always "
+    "be patient, supportive and positive; never sarcastic, dismissive or rude."
 )
 VOICES = [
     "NATF0", "NATF1", "NATF2", "NATF3",
@@ -41,6 +44,7 @@ VOICES = [
 SAMPLE_RATE = 24000
 FRAME_SIZE = 1920
 GAP_NEW_LINE_S = 3.0
+TEXT_PAD_ID = 3  # "nothing to say this frame" token in the text stream
 
 
 def emit(kind: str, msg: str = "") -> None:
@@ -353,12 +357,21 @@ def main() -> None:
     parser.add_argument("--ui-dir", required=True)
     parser.add_argument("--parent-pid", type=int)
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("-q", "--quantized", type=int, choices=[4, 8], default=4)
+    parser.add_argument("-q", "--quantized", type=int, choices=[0, 4, 8], default=4,
+                        help="4 or 8-bit quantisation; 0 keeps full bf16 weights")
     parser.add_argument("--group-size", type=int, default=64)
     parser.add_argument("--hf-repo", default="nvidia/personaplex-7b-v1")
     parser.add_argument("--voice", default="NATF2")
     parser.add_argument("--text-prompt", default=DEFAULT_PERSONA)
-    parser.add_argument("--seed", type=int, default=42424242)
+    parser.add_argument("--seed", type=int, default=-1, help="-1 = new random seed per conversation")
+    parser.add_argument("--text-temp", type=float, default=0.7)
+    parser.add_argument("--text-topk", type=int, default=25)
+    parser.add_argument("--full-depformer", action="store_true",
+                        help="also sample the (discarded) user-stream codebooks")
+    parser.add_argument("--pad-bias", type=float, default=0.0,
+                        help="logit bias on the text padding token; negative = Myra talks more")
+    parser.add_argument("--audio-temp", type=float, default=0.8)
+    parser.add_argument("--audio-topk", type=int, default=250)
     parser.add_argument("--steps", type=int, default=4000)
     args = parser.parse_args()
 
@@ -396,7 +409,8 @@ def main() -> None:
     seed_all(args.seed)
     text_tokenizer = sentencepiece.SentencePieceProcessor(files["tokenizer"])  # type: ignore
     size_gb = os.path.getsize(files["model"]) / 1e9
-    emit("STATUS", f"Loading model weights ({size_gb:.1f} GB) and quantising to {args.quantized}-bit")
+    precision = f"{args.quantized}-bit" if args.quantized else "bf16 (full precision)"
+    emit("STATUS", f"Loading model weights ({size_gb:.1f} GB) at {precision}")
     t0 = time.time()
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
@@ -414,14 +428,21 @@ def main() -> None:
             model.load_weights(files["model"], strict=True)
         if args.quantized in (4, 8):
             nn.quantize(model, bits=args.quantized, group_size=args.group_size)
+    if not args.full_depformer:
+        # The depformer also predicts the user's 8 audio codebooks, but those are always
+        # replaced by the real microphone tokens. Skipping them saves ~10% per step,
+        # which matters on a fanless Mac that throttles under sustained load.
+        n_out = lm_config.audio_tokens_per_stream
+        model.depformer.slices = model.depformer.slices[:n_out]
     mx.eval(model.parameters())
+    mx.clear_cache()
     emit("STATUS", f"Model loaded in {time.time() - t0:.0f}s")
 
     gen = models.LmGen(
         model=model,
         max_steps=args.steps + 1024,
-        text_sampler=utils.Sampler(temp=0.7, top_k=25),
-        audio_sampler=utils.Sampler(temp=0.8, top_k=250),
+        text_sampler=utils.Sampler(temp=args.text_temp, top_k=args.text_topk),
+        audio_sampler=utils.Sampler(temp=args.audio_temp, top_k=args.audio_topk),
         check=False,
         audio_silence_frame_cnt=int(0.5 * 12.5),
     )
@@ -437,8 +458,29 @@ def main() -> None:
             np.array(last)
     gen.reset_streaming()
 
+    emit("MEMORY", f"active={mx.get_active_memory() / 1e9:.2f}GB peak={mx.get_peak_memory() / 1e9:.2f}GB")
+
+    class PadBiasSampler:
+        """Shifts the text 'padding' logit (last axis) before sampling."""
+
+        def __init__(self, inner, bias: float):
+            self.inner = inner
+            vocab = lm_config.text_out_vocab_size
+            b = np.zeros(vocab, dtype=np.float32)
+            b[TEXT_PAD_ID] = bias
+            self.bias = mx.array(b)
+
+        def __call__(self, logits):
+            return self.inner(logits + self.bias.astype(logits.dtype))
+
     lock = asyncio.Lock()
     ui_dir = Path(args.ui_dir)
+
+    def qfloat(request, key: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return min(hi, max(lo, float(request.query.get(key, default))))
+        except ValueError:
+            return default
 
     async def handle_chat(request: web.Request):
         ws = web.WebSocketResponse(max_msg_size=0)
@@ -447,6 +489,12 @@ def main() -> None:
         if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
+        text_temp = qfloat(request, "text_temp", args.text_temp, 0.0, 1.5)
+        text_topk = int(qfloat(request, "text_topk", args.text_topk, 1, 500))
+        audio_temp = qfloat(request, "audio_temp", args.audio_temp, 0.0, 1.5)
+        audio_topk = int(qfloat(request, "audio_topk", args.audio_topk, 1, 2048))
+        pad_bias = qfloat(request, "pad_bias", args.pad_bias, -3.0, 1.0)
+        seed = args.seed if args.seed >= 0 else int.from_bytes(os.urandom(4), "little")
         if lock.locked():
             await ws.send_bytes(b"\x03" + "Another conversation is already running.".encode())
             await ws.close()
@@ -464,7 +512,11 @@ def main() -> None:
             """All MLX work for a session runs on this one thread, so the event loop stays
             free to feed the Mimi encoder and send audio while the GPU computes."""
             try:
-                seed_all(args.seed)
+                seed_all(seed)
+                gen.text_sampler = utils.Sampler(temp=text_temp, top_k=text_topk)
+                if pad_bias:
+                    gen.text_sampler = PadBiasSampler(gen.text_sampler, pad_bias)
+                gen.audio_sampler = utils.Sampler(temp=audio_temp, top_k=audio_topk)
                 gen.reset_streaming()
                 gen.load_voice_prompt_embeddings(voice_path)
                 gen.text_prompt_tokens = text_tokenizer.encode(wrap_with_system_tags(persona))  # type: ignore
@@ -493,7 +545,12 @@ def main() -> None:
                 if audio_tokens is not None:
                     audio_tokenizer.decode(np.array(audio_tokens).astype(np.uint32))
                 state["steps"] += 1
-                state["step_time"] += time.perf_counter() - t_step
+                dt = time.perf_counter() - t_step
+                state["step_time"] += dt
+                state["win"] = state.get("win", 0.0) + dt
+                if state["steps"] % 125 == 0:  # every ~10 s of audio
+                    emit("PERF", f"step {state['steps']}: {8 * state['win']:.1f} ms/step over last 125")
+                    state["win"] = 0.0
 
         async def recv_loop():
             buf = np.zeros(0, dtype=np.float32)
@@ -546,7 +603,8 @@ def main() -> None:
                         emit("ERROR", f"autosave failed: {exc}")
 
         async with lock:
-            emit("STATUS", f"session start voice={voice}")
+            emit("STATUS", f"session start voice={voice} text_temp={text_temp} text_topk={text_topk} "
+                           f"audio_temp={audio_temp} audio_topk={audio_topk} pad_bias={pad_bias}")
             worker = threading.Thread(target=model_worker, name="myra-model", daemon=True)
             worker.start()
             await prepared.wait()
@@ -569,7 +627,8 @@ def main() -> None:
                 if state["steps"]:
                     ms = 1000 * state["step_time"] / state["steps"]
                     emit("STATUS", f"session end: {state['steps']} steps, {ms:.1f} ms/step "
-                                   f"({80.0 / ms:.2f}x realtime)")
+                                   f"({80.0 / ms:.2f}x realtime), "
+                                   f"peak {mx.get_peak_memory() / 1e9:.2f}GB")
                 else:
                     emit("STATUS", "session end")
         return ws

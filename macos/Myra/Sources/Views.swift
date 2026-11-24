@@ -26,7 +26,24 @@ enum Voices {
         ("VARM2", "Variety male 2"), ("VARM3", "Variety male 3"),
         ("VARM4", "Variety male 4"),
     ]
-    static let defaultPersona = "You are Myra, a warm and curious companion. Listen carefully, answer clearly and keep the conversation natural."
+    static let legacyPersona = "You are Myra, a warm and curious companion. Listen carefully, answer clearly and keep the conversation natural."
+    static var defaultPersona: String { Personas.presets[0].text }
+}
+
+/// Persona presets, phrased the way NVIDIA's PersonaPlex examples are ("You enjoy having a good
+/// conversation." / "You are a wise and friendly teacher..." + scenario + persona details).
+enum Personas {
+    static let presets: [(name: String, text: String)] = [
+        ("Warm companion",
+         "You enjoy having a good conversation. Your name is Myra, and you are a warm, kind and encouraging friend who is genuinely curious about the person you are talking to. Have a relaxed, friendly conversation. Give full, thoughtful answers of several sentences, explain things with examples, share your own view, and then ask a gentle follow-up question. Always be patient, supportive and positive; never sarcastic, dismissive or rude."),
+        ("Thoughtful teacher",
+         "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way. Your name is Myra. Explain ideas step by step with simple, everyday examples, check whether the explanation makes sense, and encourage curiosity with a follow-up question. Be patient and kind, never condescending."),
+        ("Coach",
+         "You enjoy having a good conversation. Your name is Myra, and you are an upbeat, supportive life coach. Help the person think through their goals and challenges. Listen carefully, reflect back what you heard, offer practical ideas in a few clear steps, and ask an encouraging question to keep them going. Be warm and motivating, never judgmental."),
+    ]
+    static func name(for text: String) -> String {
+        presets.first { $0.text == text }?.name ?? "Custom"
+    }
 }
 
 struct ContentView: View {
@@ -236,6 +253,14 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
+                Picker("Preset", selection: Binding(
+                    get: { Personas.name(for: persona) },
+                    set: { name in
+                        if let p = Personas.presets.first(where: { $0.name == name }) { persona = p.text }
+                    })) {
+                    ForEach(Personas.presets, id: \.name) { Text($0.name).tag($0.name) }
+                    Text("Custom").tag("Custom")
+                }
                 TextEditor(text: $persona)
                     .font(.body)
                     .frame(minHeight: 120)
@@ -246,7 +271,7 @@ struct SettingsView: View {
             } header: {
                 Text("Persona")
             } footer: {
-                Text("Describe who Myra is and how she should talk. Sent to the model at the start of each conversation.")
+                Text("Pick a preset or write your own (editing the text makes it Custom). Sent to the model at the start of each conversation.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Conversation history") {
