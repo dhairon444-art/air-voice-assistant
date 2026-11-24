@@ -62,7 +62,7 @@
       <div class="status" id="lag" style="display:none;color:#fb7185;font-size:12px"></div>
       <button class="done" id="doneBtn" title="End your turn now instead of waiting for the pause">Done talking</button>
       <div class="meta" id="meta"></div>
-      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span id="aiLabel">Myra<span class="bar"><i id="outBar"></i></span></span></div>
+      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span id="aiLabel">Aria<span class="bar"><i id="outBar"></i></span></span></div>
     </section>
     <section class="transcript" id="transcriptBox" aria-live="polite">
       <h2 id="trHead">Conversation</h2>
@@ -71,7 +71,7 @@
   </main>
 <script>
 (() => {
-  const cfg = Object.assign({ mode: 'myra', name: 'Myra', voice: 'NATF2', persona: '' }, window.airConfig || {});
+  const cfg = Object.assign({ mode: 'aria', name: 'Aria', voice: 'af_heart', persona: '' }, window.airConfig || {});
   const isAria = () => cfg.mode === 'aria';
   const $ = (id) => document.getElementById(id);
   const orb = $('orb'), label = $('orbLabel'), statusEl = $('status'), meta = $('meta');

@@ -44,18 +44,14 @@ struct ContentView: View {
         }
         .onChange(of: model.state) { _, s in
             switch s {
-            case .ready(let port): web.load(port: port, mode: model.mode, voice: prefs.voice, persona: prefs.persona)
+            case .ready(let port): web.load(port: port, voice: prefs.voice, persona: prefs.persona)
             default: web.unload()
             }
         }
-        .onChange(of: prefs.voice) { _, v in web.updateConfig(mode: prefs.mode, voice: v, persona: prefs.persona) }
-        .onChange(of: prefs.persona) { _, p in web.updateConfig(mode: prefs.mode, voice: prefs.voice, persona: p) }
-        .onChange(of: prefs.brain) { _, _ in
-            if prefs.mode == .aria { model.restart(mode: .aria, voice: prefs.voice, persona: prefs.persona) }
-        }
-        .onChange(of: prefs.mode) { _, m in
-            // Only one mode's models are loaded at a time: switching restarts the model process.
-            model.restart(mode: m, voice: prefs.voice, persona: prefs.persona)
+        .onChange(of: prefs.voice) { _, v in web.updateConfig(voice: v, persona: prefs.persona) }
+        .onChange(of: prefs.persona) { _, p in web.updateConfig(voice: prefs.voice, persona: p) }
+        .onChange(of: prefs.brain) { _, b in
+            model.restart(voice: prefs.voice, persona: prefs.persona, brain: b)
         }
     }
 
@@ -64,7 +60,7 @@ struct ContentView: View {
         case .ready:
             WebViewHost(controller: web)
         case .failed(let msg):
-            FailedView(message: msg) { model.restart(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona) }
+            FailedView(message: msg) { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain) }
         default:
             LoadingView()
         }
@@ -76,14 +72,14 @@ struct LoadingView: View {
     var body: some View {
         VStack(spacing: 18) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96)
-            Text("\(model.mode.name) is waking up").font(.title2.weight(.semibold))
+            Text("Aria is waking up").font(.title2.weight(.semibold))
             ProgressView().controlSize(.large)
             Text(model.status).foregroundStyle(.secondary)
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 Text("\(Int(ctx.date.timeIntervalSince(model.startedAt)))s · first load can take a minute or two")
                     .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
             }
-            Text("🎧 Use headphones: \(model.mode.name) has no echo cancellation.")
+            Text("🎧 Use headphones: Aria stops talking when she hears you.")
                 .font(.callout).padding(.top, 8)
         }
         .padding(40)
@@ -221,41 +217,29 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Mode", selection: $prefs.mode) {
-                    ForEach(Mode.allCases) { m in Text(m.name).tag(m) }
+                Picker("Brain", selection: $prefs.brain) {
+                    ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
                 }
-                .pickerStyle(.segmented)
                 .disabled(web.live)
             } footer: {
-                Text(prefs.mode.tagline + (web.live ? " End the conversation to switch modes." : ""))
+                Text(prefs.brain.footer + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-            if prefs.mode == .aria {
-                Section {
-                    Picker("Brain", selection: $prefs.brain) {
-                        ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
-                    }
-                    .disabled(web.live)
-                } footer: {
-                    Text(prefs.brain.footer + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }
             Section {
                 Picker("Voice", selection: $prefs.voice) {
-                    ForEach(prefs.mode.voices, id: \.id) { v in Text("\(v.id) · \(v.label)").tag(v.id) }
+                    ForEach(Voices.all, id: \.id) { v in Text("\(v.id) · \(v.label)").tag(v.id) }
                 }
             } footer: {
-                Text(prefs.mode.voiceFooter)
+                Text("Kokoro voices. Changes apply to the next conversation.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Picker("Preset", selection: Binding(
-                    get: { Personas.presetName(for: prefs.persona, mode: prefs.mode) },
+                    get: { Personas.presetName(for: prefs.persona) },
                     set: { name in
-                        if let p = Personas.presets(for: prefs.mode).first(where: { $0.name == name }) { prefs.persona = p.text }
+                        if let p = Personas.templates.first(where: { $0.name == name }) { prefs.persona = p.text }
                     })) {
-                    ForEach(Personas.presets(for: prefs.mode), id: \.name) { Text($0.name).tag($0.name) }
+                    ForEach(Personas.templates, id: \.name) { Text($0.name).tag($0.name) }
                     Text("Custom").tag("Custom")
                 }
                 TextEditor(text: $prefs.persona)
@@ -263,7 +247,7 @@ struct SettingsView: View {
                     .frame(minHeight: 120)
                 HStack {
                     Spacer()
-                    Button("Reset to default") { prefs.persona = Personas.defaultText(for: prefs.mode) }
+                    Button("Reset to default") { prefs.persona = Personas.defaultText }
                 }
             } header: {
                 Text("Persona")
@@ -282,10 +266,9 @@ struct SettingsView: View {
             }
             Section("Model") {
                 LabeledContent("Python", value: model.pythonPath)
-                LabeledContent("Running", value: model.mode.name)
-                LabeledContent("Models", value: model.mode.modelDescription + " · offline · 127.0.0.1 only")
+                LabeledContent("Models", value: "\(prefs.brain.rawValue.split(separator: "/").last ?? "") · parakeet-tdt-0.6b-v2 · Kokoro-82M · offline · 127.0.0.1 only")
                 HStack {
-                    Button("Restart model") { model.restart(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona) }
+                    Button("Restart model") { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain) }
                         .disabled(web.live)
                     Button("Show log") { NSWorkspace.shared.open(ModelProcess.logURL) }
                 }

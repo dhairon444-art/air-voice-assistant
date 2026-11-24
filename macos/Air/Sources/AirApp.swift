@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        model.start(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona)
+        model.start(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
 
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }

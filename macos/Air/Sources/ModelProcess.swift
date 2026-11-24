@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Runs the PersonaPlex model server as a child process and tracks its state.
+/// Runs Aria's model server (speech recognition, language model, voice) as a child process.
 ///
 /// Lifetime guarantees:
 /// * normal quit: SIGTERM, then SIGKILL after a grace period (`stop()`)
@@ -34,24 +34,19 @@ final class ModelProcess: ObservableObject {
         return dir.appendingPathComponent("server.log")
     }()
 
-    @Published private(set) var mode: Mode = .myra
-
-    func pythonPath(for mode: Mode) -> String {
-        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: mode.pythonInfoKey) as? String,
+    var pythonPath: String {
+        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: "AirAriaPythonPath") as? String,
            !fromPlist.isEmpty, !fromPlist.hasPrefix("__") {
             return (fromPlist as NSString).expandingTildeInPath
         }
-        return mode.defaultPython
+        return NSHomeDirectory() + "/Library/Application Support/Air/venv-smart/bin/python"
     }
-    var pythonPath: String { pythonPath(for: mode) }
 
-    func start(mode: Mode, voice: String, persona: String) {
-        self.mode = mode
+    func start(voice: String, persona: String, brain: Brain) {
         guard process == nil else { return }
         let res = Bundle.main.resourceURL!
-        let server = res.appendingPathComponent("server/" + mode.script).path
+        let server = res.appendingPathComponent("server/aria_server.py").path
         let ui = res.appendingPathComponent("ui").path
-        let pyLib = res.appendingPathComponent("python").path
 
         guard FileManager.default.isExecutableFile(atPath: pythonPath) else {
             state = .failed("Python was not found at \(pythonPath). Set up the venv (see README) and relaunch.")
@@ -68,13 +63,11 @@ final class ModelProcess: ObservableObject {
             "--vault", Vault.url.path,
             "--ui-dir", ui,
             "--parent-pid", String(getpid()),
-        ] + (mode == .myra ? ["-q", "4", "--stt-python", pythonPath(for: .aria)]
-                           : ["--llm", UserDefaults.standard.string(forKey: "ariaBrain") ?? Brain.fast.rawValue]) + [
+            "--llm", brain.rawValue,
             "--voice", voice,
             "--text-prompt", persona,
         ]
         var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = pyLib
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
         // Fully offline: never contact Hugging Face, never send telemetry.
@@ -117,9 +110,9 @@ final class ModelProcess: ObservableObject {
 
     func noteSessionsChanged() { sessionsChanged += 1 }
 
-    func restart(mode: Mode, voice: String, persona: String) {
+    func restart(voice: String, persona: String, brain: Brain) {
         stop()
-        start(mode: mode, voice: voice, persona: persona)
+        start(voice: voice, persona: persona, brain: brain)
     }
 
     /// Terminate the child and wait (bounded) until it is gone.
