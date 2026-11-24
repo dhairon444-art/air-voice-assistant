@@ -1,4 +1,4 @@
-// Audio worklets for Myra: microphone capture -> 24 kHz Int16, and 24 kHz playback.
+// Audio worklets for Air: microphone capture -> 24 kHz Int16, and 24 kHz playback.
 const MODEL_RATE = 24000;
 
 class MyraCapture extends AudioWorkletProcessor {
@@ -97,5 +97,5 @@ class MyraPlayer extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('myra-capture', MyraCapture);
-registerProcessor('myra-player', MyraPlayer);
+registerProcessor('air-capture', MyraCapture);
+registerProcessor('air-player', MyraPlayer);

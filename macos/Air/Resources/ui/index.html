@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Myra</title>
+<title>Air</title>
 <style>
   :root {
     --bg: #f6f7fb; --panel: #ffffff; --text: #132034; --muted: #5b6475;
@@ -63,19 +63,19 @@
   </main>
 <script>
 (() => {
-  const cfg = Object.assign({ voice: 'NATF2', persona: '' }, window.myraConfig || {});
+  const cfg = Object.assign({ voice: 'NATF2', persona: '' }, window.airConfig || {});
   const $ = (id) => document.getElementById(id);
   const orb = $('orb'), label = $('orbLabel'), statusEl = $('status'), meta = $('meta');
   const transcript = $('transcript'), box = $('transcriptBox');
   let ctx = null, ws = null, mic = null, capture = null, player = null, src = null;
   let live = false, startTime = 0, lastText = 0, curP = null;
 
-  const post = (msg) => { try { window.webkit.messageHandlers.myra.postMessage(msg); } catch (_) {} };
+  const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
   const setStatus = (t) => { statusEl.textContent = t; };
   const renderMeta = () => {
     meta.textContent = `Voice ${cfg.voice} · ${cfg.persona ? cfg.persona : 'default persona'}`;
   };
-  window.myraSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); };
+  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); };
   renderMeta();
 
   function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
@@ -141,7 +141,7 @@
     orb.setAttribute('aria-label', 'End conversation');
     setStatus('Live. Talk to Myra.');
     src = ctx.createMediaStreamSource(mic);
-    capture = new AudioWorkletNode(ctx, 'myra-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
+    capture = new AudioWorkletNode(ctx, 'air-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
     capture.port.onmessage = (e) => {
       $('micBar').style.width = Math.min(100, e.data.level * 400) + '%';
       if (ws && ws.readyState === 1) {
@@ -151,7 +151,7 @@
       }
     };
     src.connect(capture);
-    player = new AudioWorkletNode(ctx, 'myra-player', { numberOfInputs: 0, outputChannelCount: [2] });
+    player = new AudioWorkletNode(ctx, 'air-player', { numberOfInputs: 0, outputChannelCount: [2] });
     player.port.onmessage = (e) => { $('outBar').style.width = Math.min(100, e.data.level * 400) + '%'; };
     player.connect(ctx.destination);
     post({ type: 'state', state: 'live' });
@@ -170,7 +170,7 @@
     orb.classList.remove('live', 'busy'); label.textContent = 'Start';
     orb.setAttribute('aria-label', 'Start conversation');
     if (wasLive) {
-      setStatus('Conversation ended. Saved to the Myra vault in Obsidian (see History).');
+      setStatus('Conversation ended. Saved to the Air vault in Obsidian (see History).');
       post({ type: 'state', state: 'ended' });
     } else if (fromClose && statusEl.textContent.startsWith('Preparing')) {
       setStatus('Could not start the conversation.');
@@ -178,7 +178,7 @@
   }
 
   orb.addEventListener('click', () => { if (live) stop(false); else if (!ws) start(); });
-  window.myraStop = () => stop(false);
+  window.airStop = () => stop(false);
   window.addEventListener('keydown', (e) => { if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); orb.click(); } });
 })();
 </script>

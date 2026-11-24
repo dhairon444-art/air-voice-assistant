@@ -67,28 +67,28 @@ python -m personaplex_mlx.offline \
   --seed 42424242
 ```
 
-## Myra: macOS app
+## Air: macOS app
 
-`macos/Myra` wraps the model in a native macOS app. Open Myra.app and talk to the model in its own window. There is no browser and no server left running.
+`macos/Air` wraps the model in a native macOS app called Air. Its PersonaPlex mode is named **Myra**. Open Air.app and talk to the model in its own window. There is no browser and no server left running.
 
 - When the app opens it starts the model as a child process bound to `127.0.0.1` on a free port, with `HF_HUB_OFFLINE=1`. Every file is read from the local Hugging Face cache.
 - Quitting the app stops the model. If the app crashes or is force-quit, the model process notices that its parent has gone and exits on its own.
-- Settings (voice and persona) are remembered between launches. Changes apply to the next conversation.
-- Each conversation is saved as a Markdown note in the `Myra` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Myra`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md`. `Myra Index.md` lists every session, newest first. The History tab reads these notes and can open any of them in Obsidian.
-- Only Myra's side is transcribed. PersonaPlex streams the text of what it says, not what you say.
+- Settings hold the voice and the persona. There are three persona presets (Warm companion, Thoughtful teacher, Coach) or you can write your own. Settings are remembered between launches and apply to the next conversation.
+- Each conversation is saved as a Markdown note in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md` and tagged with the mode. `Air Index.md` lists every session, newest first. The History tab reads these notes and can open any of them in Obsidian.
+- In Myra mode only the assistant's side is transcribed. PersonaPlex streams the text of what it says, not what you say.
 - Use headphones, because there is no echo cancellation.
 
 Build and install (needs Xcode and an existing venv that has this package's dependencies installed):
 
 ```bash
-cd macos/Myra
-./build.sh             # builds macos/Myra/build/Myra.app
-./build.sh --install   # also copies it to /Applications/Myra.app (quit Myra first)
+cd macos/Air
+./build.sh             # builds macos/Air/build/Air.app
+./build.sh --install   # also copies it to /Applications/Air.app (quit Air first)
 ```
 
-By default the app runs `~/personaplex-mlx/.venv/bin/python`. To use a different venv, set `MYRA_PYTHON=/path/to/bin/python` when you build. The app bundles its own copy of `personaplex_mlx`, so the venv only needs the dependencies. The server log is written to `~/Library/Logs/Myra/server.log`.
+By default the app runs `~/personaplex-mlx/.venv/bin/python`. To use a different venv, set `AIR_MYRA_PYTHON=/path/to/bin/python` when you build. The app bundles its own copy of `personaplex_mlx`, so the venv only needs the dependencies. The server log is written to `~/Library/Logs/Air/server.log`.
 
-On first launch, allow microphone access when macOS asks. To use "Open in Obsidian", add the vault to Obsidian once: Open another vault → Open folder as vault → `Obsidian vaults/Myra`.
+On first launch, allow microphone access when macOS asks. To use "Open in Obsidian", add the vault to Obsidian once: Open another vault → Open folder as vault → `Obsidian vaults/Air`.
 
 ## Voices
 

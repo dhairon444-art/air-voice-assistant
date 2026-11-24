@@ -29,7 +29,7 @@ final class ModelProcess: ObservableObject {
 
     static let logURL: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/Myra", isDirectory: true)
+            .appendingPathComponent("Library/Logs/Air", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("server.log")
     }()
@@ -38,7 +38,7 @@ final class ModelProcess: ObservableObject {
         if let override = UserDefaults.standard.string(forKey: "pythonPath"), !override.isEmpty {
             return override
         }
-        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: "MyraPythonPath") as? String {
+        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: "AirMyraPythonPath") as? String {
             return (fromPlist as NSString).expandingTildeInPath
         }
         return NSHomeDirectory() + "/personaplex-mlx/.venv/bin/python"
@@ -47,7 +47,7 @@ final class ModelProcess: ObservableObject {
     func start(voice: String, persona: String) {
         guard process == nil else { return }
         let res = Bundle.main.resourceURL!
-        let server = res.appendingPathComponent("server/myra_server.py").path
+        let server = res.appendingPathComponent("server/quick_server.py").path
         let ui = res.appendingPathComponent("ui").path
         let pyLib = res.appendingPathComponent("python").path
 
@@ -166,17 +166,17 @@ final class ModelProcess: ObservableObject {
         guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         recentLog.append(line)
         if recentLog.count > 40 { recentLog.removeFirst(recentLog.count - 40) }
-        if line.hasPrefix("MYRA_STATUS ") {
-            let s = String(line.dropFirst("MYRA_STATUS ".count))
+        if line.hasPrefix("AIR_STATUS ") {
+            let s = String(line.dropFirst("AIR_STATUS ".count))
             if case .starting = state { status = s }
-        } else if line.hasPrefix("MYRA_READY "), let port = Int(line.dropFirst("MYRA_READY ".count)) {
+        } else if line.hasPrefix("AIR_READY "), let port = Int(line.dropFirst("AIR_READY ".count)) {
             state = .ready(port: port)
             status = "Ready"
-        } else if line.hasPrefix("MYRA_ERROR ") {
-            let msg = String(line.dropFirst("MYRA_ERROR ".count))
+        } else if line.hasPrefix("AIR_ERROR ") {
+            let msg = String(line.dropFirst("AIR_ERROR ".count))
             if case .ready = state { return }
             state = .failed(msg)
-        } else if line.hasPrefix("MYRA_SESSION_SAVED ") {
+        } else if line.hasPrefix("AIR_SESSION_SAVED ") {
             sessionsChanged += 1
         }
     }

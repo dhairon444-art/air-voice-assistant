@@ -1,14 +1,14 @@
-"""Myra model server.
+"""Air's "Myra" mode server (PersonaPlex-MLX).
 
-Runs PersonaPlex-MLX as a child process of Myra.app:
+Runs PersonaPlex-MLX as a child process of Air.app:
 
 * binds to 127.0.0.1 only, on a free port chosen by the OS
 * reads every model file from the local Hugging Face cache (no network)
 * streams raw 16-bit PCM over a WebSocket to the app's own web UI
-* writes each conversation to the "Myra" Obsidian vault
+* writes each conversation to the "Air" Obsidian vault
 * exits as soon as its parent app goes away (stdin EOF or parent PID change)
 
-Lines starting with MYRA_STATUS / MYRA_READY / MYRA_ERROR on stdout are read by
+Lines starting with AIR_STATUS / AIR_READY / AIR_ERROR on stdout are read by
 the Swift app.
 """
 
@@ -43,287 +43,15 @@ VOICES = [
 ]
 SAMPLE_RATE = 24000
 FRAME_SIZE = 1920
-GAP_NEW_LINE_S = 3.0
 TEXT_PAD_ID = 3  # "nothing to say this frame" token in the text stream
 
 
-def emit(kind: str, msg: str = "") -> None:
-    print(f"MYRA_{kind} {msg}".rstrip(), flush=True)
-
-
-# ---------------------------------------------------------------- lifetime ---
-
-_active_recorders: set["SessionRecorder"] = set()
-_shutdown_lock = threading.Lock()
-
-
-def shutdown(reason: str) -> None:
-    """Save any open session, then exit immediately (no lingering threads)."""
-    if not _shutdown_lock.acquire(blocking=False):
-        return
-    try:
-        emit("STATUS", f"shutting down ({reason})")
-        for rec in list(_active_recorders):
-            try:
-                rec.finish()
-            except Exception as exc:  # pragma: no cover - best effort
-                emit("ERROR", f"could not save session: {exc}")
-    finally:
-        os._exit(0)
-
-
-def watch_parent(parent_pid: int | None) -> None:
-    """Exit when the app dies, even on force quit / crash (SIGKILL)."""
-
-    def stdin_watch():
-        try:
-            while sys.stdin.buffer.read(1024):
-                pass
-        except Exception:
-            pass
-        shutdown("parent closed pipe")
-
-    def pid_watch():
-        while True:
-            time.sleep(1.0)
-            if parent_pid is not None and os.getppid() != parent_pid:
-                shutdown("parent exited")
-
-    threading.Thread(target=stdin_watch, daemon=True).start()
-    threading.Thread(target=pid_watch, daemon=True).start()
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, lambda s, f: shutdown(f"signal {s}"))
-
-
-# ------------------------------------------------------------------- vault ---
-
-BRIGHT_SNIPPET_NAME = "myra-bright-diagrams"
-BRIGHT_SNIPPET = """/* Bright Mermaid charts with dark labels (Myra vault). */
-.mermaid .pieTitleText, .mermaid .legend text { fill: var(--text-normal) !important; }
-.mermaid .slice { fill: #132034 !important; }
-"""
-
-
-def fmt_duration(seconds: float) -> str:
-    seconds = int(round(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m {s:02d}s"
-    return f"{m}m {s:02d}s"
-
-
-def ensure_vault(vault: Path) -> None:
-    (vault / "Sessions").mkdir(parents=True, exist_ok=True)
-    obs = vault / ".obsidian"
-    snippets = obs / "snippets"
-    if not obs.exists():
-        snippets.mkdir(parents=True, exist_ok=True)
-        (snippets / f"{BRIGHT_SNIPPET_NAME}.css").write_text(BRIGHT_SNIPPET, encoding="utf-8")
-        (obs / "appearance.json").write_text(
-            json.dumps({"enabledCssSnippets": [BRIGHT_SNIPPET_NAME]}, indent=2), encoding="utf-8"
-        )
-        (obs / "app.json").write_text(json.dumps({"alwaysUpdateLinks": True}, indent=2), encoding="utf-8")
-    if not (vault / "Myra Index.md").exists():
-        write_index(vault)
-
-
-_FM_RE = re.compile(r"^---\n(.*?)\n---\n", re.S)
-
-
-def read_frontmatter(path: Path) -> dict[str, str]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    m = _FM_RE.match(text)
-    out: dict[str, str] = {}
-    if not m:
-        return out
-    for line in m.group(1).splitlines():
-        if ":" in line and not line.startswith(" "):
-            key, val = line.split(":", 1)
-            val = val.strip()
-            if val.startswith('"'):
-                try:
-                    val = json.loads(val)
-                except json.JSONDecodeError:
-                    pass
-            out[key.strip()] = val
-    return out
-
-
-def write_index(vault: Path) -> None:
-    sessions = sorted((vault / "Sessions").rglob("*.md"), key=lambda p: p.name, reverse=True)
-    rows = []
-    voices: dict[str, int] = {}
-    total = 0
-    for p in sessions:
-        fm = read_frontmatter(p)
-        rel = p.relative_to(vault).with_suffix("").as_posix()
-        try:
-            label = datetime.strptime(p.stem[:15], "%Y-%m-%d %H%M").strftime("%a %d %b %Y, %H:%M")
-        except ValueError:
-            label = p.stem
-        voice = fm.get("voice", "")
-        voices[voice or "unknown"] = voices.get(voice or "unknown", 0) + 1
-        try:
-            total += int(fm.get("duration_seconds", "0"))
-        except ValueError:
-            pass
-        persona = fm.get("persona", "").replace("|", "/").replace("\n", " ")
-        if len(persona) > 60:
-            persona = persona[:57] + "..."
-        rows.append(
-            f"| [[{rel}\\|{label}]] | {fm.get('duration', '')} | {voice} | {persona} |"
-        )
-
-    lines = [
-        "---",
-        "tags: [myra, index]",
-        "---",
-        "# Myra Index",
-        "",
-        "Every conversation with Myra, newest first. Myra.app rewrites this note after each session.",
-        "",
-        f"**{len(sessions)} session{'' if len(sessions) == 1 else 's'}** · **{fmt_duration(total)}** of conversation in total.",
-        "",
-    ]
-    if voices and sessions:
-        palette = ["#38BDF8", "#34D399", "#FBBF24", "#A78BFA", "#FB7185", "#F472B6"]
-        theme = {"background": "transparent", "pieTitleTextColor": "#132034",
-                 "pieSectionTextColor": "#132034", "pieLegendTextColor": "#132034",
-                 "pieStrokeColor": "#132034"}
-        for i, c in enumerate(palette * 2):
-            theme[f"pie{i + 1}"] = c
-        lines += [
-            "```mermaid",
-            "%%{init: " + json.dumps({"theme": "base", "themeVariables": theme}) + "}%%",
-            "pie showData title Sessions by voice",
-        ]
-        for v, n in sorted(voices.items(), key=lambda kv: -kv[1]):
-            lines.append(f'    "{v}" : {n}')
-        lines += ["```", ""]
-    lines += [
-        "| Session | Duration | Voice | Persona |",
-        "| --- | --- | --- | --- |",
-    ]
-    lines += rows or ["| _No sessions yet_ | | | |"]
-    lines.append("")
-    tmp = vault / ".Myra Index.md.tmp"
-    tmp.write_text("\n".join(lines), encoding="utf-8")
-    os.replace(tmp, vault / "Myra Index.md")
-
-
-class SessionRecorder:
-    """Collects Myra's streamed text and keeps a Markdown note up to date."""
-
-    def __init__(self, vault: Path, voice: str, persona: str):
-        self.vault = vault
-        self.voice = voice
-        self.persona = persona
-        self.start = datetime.now()
-        self.start_mono = time.monotonic()
-        self.end: datetime | None = None
-        self.segments: list[list] = []  # [offset_seconds, text]
-        self.last_text_mono = 0.0
-        self.lock = threading.Lock()
-        self.finished = False
-        folder = vault / "Sessions" / self.start.strftime("%Y") / self.start.strftime("%m")
-        folder.mkdir(parents=True, exist_ok=True)
-        base = self.start.strftime("%Y-%m-%d %H%M")
-        path = folder / f"{base}.md"
-        n = 2
-        while path.exists():
-            path = folder / f"{base} ({n}).md"
-            n += 1
-        self.path = path
-        _active_recorders.add(self)
-
-    def add_text(self, piece: str) -> None:
-        now = time.monotonic()
-        with self.lock:
-            if not self.segments or now - self.last_text_mono > GAP_NEW_LINE_S:
-                self.segments.append([now - self.start_mono, piece.lstrip()])
-            else:
-                self.segments[-1][1] += piece
-            self.last_text_mono = now
-
-    def has_text(self) -> bool:
-        with self.lock:
-            return any(seg[1].strip() for seg in self.segments)
-
-    def render(self, final: bool) -> str:
-        end = self.end or datetime.now()
-        duration = (end - self.start).total_seconds()
-        with self.lock:
-            segs = [(o, t.strip()) for o, t in self.segments if t.strip()]
-        words = sum(len(t.split()) for _, t in segs)
-        title = self.start.strftime("%a %d %b %Y, %H:%M")
-        fm = [
-            "---",
-            f"date: {self.start.strftime('%Y-%m-%d')}",
-            f'start: "{self.start.strftime("%H:%M:%S")}"',
-            f'end: "{end.strftime("%H:%M:%S")}"',
-            f'duration: "{fmt_duration(duration)}"',
-            f"duration_seconds: {int(round(duration))}",
-            f"voice: {self.voice}",
-            f"persona: {json.dumps(self.persona, ensure_ascii=False)}",
-            f"status: {'complete' if final else 'in-progress'}",
-            "tags: [myra, session]",
-            "---",
-        ]
-        body = [
-            f"# Myra session · {title}",
-            "",
-            "Back to [[Myra Index]]",
-            "",
-            "| Started | Ended | Duration | Voice | Words from Myra |",
-            "| --- | --- | --- | --- | --- |",
-            f"| {self.start.strftime('%H:%M:%S')} | {end.strftime('%H:%M:%S')} | "
-            f"{fmt_duration(duration)} | {self.voice} | {words} |",
-            "",
-            "## Persona",
-            "",
-            "> " + self.persona.replace("\n", "\n> "),
-            "",
-            "## Transcript",
-            "",
-            "> [!note] Myra's side only",
-            "> PersonaPlex streams the text of what Myra says. It does not transcribe "
-            "your microphone, so your side of the conversation is not recorded.",
-            "",
-        ]
-        if segs:
-            for offset, text in segs:
-                mm, ss = divmod(int(offset), 60)
-                body.append(f"**[{mm:02d}:{ss:02d}] Myra:** {text}")
-                body.append("")
-        else:
-            body.append("_Myra said nothing in this session._")
-            body.append("")
-        return "\n".join(fm + body)
-
-    def save(self, final: bool = False) -> None:
-        tmp = self.path.with_name("." + self.path.name + ".tmp")
-        tmp.write_text(self.render(final), encoding="utf-8")
-        os.replace(tmp, self.path)
-
-    def finish(self) -> Path | None:
-        if self.finished:
-            return None
-        self.finished = True
-        _active_recorders.discard(self)
-        self.end = datetime.now()
-        duration = (self.end - self.start).total_seconds()
-        if not self.has_text() and duration < 5:
-            # Nothing worth keeping (e.g. connect + immediate disconnect).
-            self.path.unlink(missing_ok=True)
-            write_index(self.vault)
-            return None
-        self.save(final=True)
-        write_index(self.vault)
-        return self.path
+from air_common import (  # noqa: E402  (shared with smart_server.py)
+    SessionRecorder,
+    emit,
+    ensure_vault,
+    watch_parent,
+)
 
 
 # ------------------------------------------------------------------ server ---
@@ -369,7 +97,7 @@ def main() -> None:
     parser.add_argument("--full-depformer", action="store_true",
                         help="also sample the (discarded) user-stream codebooks")
     parser.add_argument("--pad-bias", type=float, default=0.0,
-                        help="logit bias on the text padding token; negative = Myra talks more")
+                        help="logit bias on the text padding token; negative = the model talks more")
     parser.add_argument("--audio-temp", type=float, default=0.8)
     parser.add_argument("--audio-topk", type=int, default=250)
     parser.add_argument("--steps", type=int, default=4000)
@@ -605,7 +333,7 @@ def main() -> None:
         async with lock:
             emit("STATUS", f"session start voice={voice} text_temp={text_temp} text_topk={text_topk} "
                            f"audio_temp={audio_temp} audio_topk={audio_topk} pad_bias={pad_bias}")
-            worker = threading.Thread(target=model_worker, name="myra-model", daemon=True)
+            worker = threading.Thread(target=model_worker, name="air-model", daemon=True)
             worker.start()
             await prepared.wait()
             if state["error"]:
@@ -614,7 +342,8 @@ def main() -> None:
                 await ws.close()
                 await asyncio.to_thread(worker.join)
                 return ws
-            recorder = SessionRecorder(vault, voice, persona)
+            recorder = SessionRecorder(vault, voice, persona, mode="Myra", model_id=args.hf_repo,
+                                       assistant="Myra", user_side=False)
             await ws.send_bytes(b"\x00")
             try:
                 await asyncio.gather(recv_loop(), send_loop(), autosave_loop())

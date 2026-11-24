@@ -16,7 +16,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
-        config.userContentController.add(WeakHandler(self), name: "myra")
+        config.userContentController.add(WeakHandler(self), name: "air")
         webView.uiDelegate = self
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
@@ -27,7 +27,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         loadedPort = port
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
-        ucc.addUserScript(WKUserScript(source: "window.myraConfig = \(Self.configJSON(voice: voice, persona: persona));",
+        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(Self.configJSON(voice: voice, persona: persona));",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
     }
@@ -42,9 +42,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         let json = Self.configJSON(voice: voice, persona: persona)
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
-        ucc.addUserScript(WKUserScript(source: "window.myraConfig = \(json);",
+        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(json);",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        webView.evaluateJavaScript("window.myraSetConfig && window.myraSetConfig(\(json))")
+        webView.evaluateJavaScript("window.airSetConfig && window.airSetConfig(\(json))")
     }
 
     static func configJSON(voice: String, persona: String) -> String {

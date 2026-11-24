@@ -51,8 +51,8 @@ struct ContentView: View {
     @EnvironmentObject var web: WebController
     @AppStorage("voice") private var voice = "NATF2"
     @AppStorage("persona") private var persona = Voices.defaultPersona
-    // `-MyraInitialTab History` on the command line opens another tab first (used for testing).
-    @State private var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "MyraInitialTab") ?? "") ?? .talk
+    // `-AirInitialTab History` on the command line opens another tab first (used for testing).
+    @State private var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "AirInitialTab") ?? "") ?? .talk
 
     var body: some View {
         ZStack {
@@ -156,7 +156,7 @@ struct HistoryView: View {
                 ForEach(notes) { n in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(n.title).font(.body.weight(.medium))
-                        Text([n.duration, n.voice].filter { !$0.isEmpty }.joined(separator: " · "))
+                        Text([n.mode, n.duration, n.voice].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 2)
@@ -176,7 +176,7 @@ struct HistoryView: View {
                     VStack(spacing: 10) {
                         Image(systemName: "text.bubble").font(.system(size: 36)).foregroundStyle(.secondary)
                         Text("Pick a conversation to read it").foregroundStyle(.secondary)
-                        Button("Open Myra Index in Obsidian") { Vault.open(Vault.indexURL) }
+                        Button("Open Air Index in Obsidian") { Vault.open(Vault.indexURL) }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -200,7 +200,7 @@ struct SessionDetail: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(note.title).font(.title2.weight(.semibold))
-                    Text("\(note.start)–\(note.end) · \(note.duration) · voice \(note.voice)\(note.status == "in-progress" ? " · in progress" : "")")
+                    Text("\(note.mode) · \(note.start)–\(note.end) · \(note.duration) · voice \(note.voice)\(note.status == "in-progress" ? " · in progress" : "")")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -215,15 +215,19 @@ struct SessionDetail: View {
                     GroupBox("Persona") {
                         Text(note.persona).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     }
-                    Text("Myra's side of the conversation. Your speech is not transcribed by the model.")
-                        .font(.caption).foregroundStyle(.secondary)
                     let lines = note.transcript()
+                    if !lines.contains(where: { $0.speaker == "You" }) {
+                        Text("\(note.mode)'s side of the conversation. This mode does not transcribe your speech.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     if lines.isEmpty {
-                        Text("Myra said nothing in this session.").italic().foregroundStyle(.secondary)
+                        Text("Nothing was said in this session.").italic().foregroundStyle(.secondary)
                     }
                     ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text(line.time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text(line.speaker).font(.callout.weight(.semibold))
+                                .foregroundStyle(line.speaker == "You" ? Color.green : Color.accentColor)
                             Text(line.text).textSelection(.enabled)
                         }
                     }
@@ -285,7 +289,8 @@ struct SettingsView: View {
             }
             Section("Model") {
                 LabeledContent("Python", value: model.pythonPath)
-                LabeledContent("Mode", value: "PersonaPlex 7B · 4-bit · offline · 127.0.0.1 only")
+                LabeledContent("Mode", value: "Myra")
+                LabeledContent("Model", value: "nvidia/personaplex-7b-v1 · 4-bit · offline · 127.0.0.1 only")
                 HStack {
                     Button("Restart model") { model.restart(voice: voice, persona: persona) }
                         .disabled(web.live)

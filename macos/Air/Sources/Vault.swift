@@ -1,15 +1,15 @@
 import AppKit
 import Foundation
 
-/// The "Myra" Obsidian vault and the session notes inside it.
+/// The "Air" Obsidian vault and the session notes inside it.
 enum Vault {
-    static let name = "Myra"
+    static let name = "Air"
     static let url: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Myra", isDirectory: true)
+        .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air", isDirectory: true)
     static var sessionsURL: URL { url.appendingPathComponent("Sessions", isDirectory: true) }
-    static var indexURL: URL { url.appendingPathComponent("Myra Index.md") }
+    static var indexURL: URL { url.appendingPathComponent("Air Index.md") }
 
-    /// obsidian:// link that opens a note in the Myra vault.
+    /// obsidian:// link that opens a note in the Air vault.
     static func obsidianURL(for file: URL) -> URL? {
         var rel = file.path.replacingOccurrences(of: url.path + "/", with: "")
         if rel.hasSuffix(".md") { rel.removeLast(3) }
@@ -24,7 +24,7 @@ enum Vault {
         return c.url
     }
 
-    /// True when Obsidian already knows the Myra vault (read-only check of Obsidian's vault list).
+    /// True when Obsidian already knows the Air vault (read-only check of Obsidian's vault list).
     static var isRegisteredInObsidian: Bool {
         let cfg = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/obsidian/obsidian.json")
@@ -41,7 +41,7 @@ enum Vault {
     @MainActor static func open(_ file: URL) {
         guard isRegisteredInObsidian else {
             let alert = NSAlert()
-            alert.messageText = "Add the Myra vault to Obsidian once"
+            alert.messageText = "Add the Air vault to Obsidian once"
             alert.informativeText = "In Obsidian choose Open another vault → Open folder as vault, then pick:\n\n\(url.path)\n\nAfter that, Open in Obsidian goes straight to the note."
             alert.addButton(withTitle: "Open Obsidian")
             alert.addButton(withTitle: "Show Folder in Finder")
@@ -71,6 +71,7 @@ struct SessionNote: Identifiable, Hashable {
     let voice: String
     let persona: String
     let status: String
+    let mode: String
     var id: URL { url }
 
     static func load(_ url: URL) -> SessionNote {
@@ -91,7 +92,8 @@ struct SessionNote: Identifiable, Hashable {
             url: url, date: date, title: title,
             start: fm["start"] ?? "", end: fm["end"] ?? "",
             duration: fm["duration"] ?? "", voice: fm["voice"] ?? "",
-            persona: fm["persona"] ?? "", status: fm["status"] ?? ""
+            persona: fm["persona"] ?? "", status: fm["status"] ?? "",
+            mode: fm["mode"] ?? "Myra"
         )
     }
 
@@ -114,14 +116,15 @@ struct SessionNote: Identifiable, Hashable {
         return out
     }
 
-    /// Transcript lines ("**[mm:ss] Myra:** text") from the note body.
-    func transcript() -> [(time: String, text: String)] {
+    /// Transcript lines ("**[mm:ss] Speaker:** text") from the note body.
+    func transcript() -> [(time: String, speaker: String, text: String)] {
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        var out: [(String, String)] = []
+        var out: [(String, String, String)] = []
         for line in text.split(separator: "\n") where line.hasPrefix("**[") {
-            guard let close = line.range(of: "]") , let colon = line.range(of: ":** ") else { continue }
+            guard let close = line.range(of: "] "), let colon = line.range(of: ":** ") else { continue }
             let time = String(line[line.index(line.startIndex, offsetBy: 3)..<close.lowerBound])
-            out.append((time, String(line[colon.upperBound...])))
+            let speaker = String(line[close.upperBound..<colon.lowerBound])
+            out.append((time, speaker, String(line[colon.upperBound...])))
         }
         return out
     }

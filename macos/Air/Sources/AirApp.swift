@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
         web.onSessionEnded = { [weak self] in
-            // The server also reports MYRA_SESSION_SAVED; this is a fallback refresh.
+            // The server also reports AIR_SESSION_SAVED; this is a fallback refresh.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
         }
 
@@ -20,11 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
-        window.title = "Myra"
+        window.title = "Air"
         window.toolbarStyle = .unified
         window.contentView = NSHostingView(rootView: root)
-        window.setFrameAutosaveName("MyraMain")
-        if !window.setFrameUsingName("MyraMain") { window.center() }
+        window.setFrameAutosaveName("AirMain")
+        if !window.setFrameUsingName("AirMain") { window.center() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        web.webView.evaluateJavaScript("window.myraStop && window.myraStop()")
+        web.webView.evaluateJavaScript("window.airStop && window.airStop()")
         model.stop()
     }
 
@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct MyraMain {
+struct AirMain {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
@@ -76,11 +76,11 @@ struct MyraMain {
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Myra", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Air", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Myra", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Hide Air", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Myra", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Air", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
 
         let editItem = NSMenuItem()
