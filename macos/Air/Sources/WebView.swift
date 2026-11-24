@@ -22,12 +22,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.setValue(false, forKey: "drawsBackground")
     }
 
-    func load(port: Int, voice: String, persona: String) {
+    func load(port: Int, mode: Mode, voice: String, persona: String) {
         guard loadedPort != port else { return }
         loadedPort = port
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
-        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(Self.configJSON(voice: voice, persona: persona));",
+        ucc.addUserScript(WKUserScript(source: "window.airConfig = \(Self.configJSON(mode: mode, voice: voice, persona: persona));",
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
     }
@@ -38,8 +38,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.loadHTMLString("", baseURL: nil)
     }
 
-    func updateConfig(voice: String, persona: String) {
-        let json = Self.configJSON(voice: voice, persona: persona)
+    func updateConfig(mode: Mode, voice: String, persona: String) {
+        let json = Self.configJSON(mode: mode, voice: voice, persona: persona)
         let ucc = webView.configuration.userContentController
         ucc.removeAllUserScripts()
         ucc.addUserScript(WKUserScript(source: "window.airConfig = \(json);",
@@ -47,8 +47,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         webView.evaluateJavaScript("window.airSetConfig && window.airSetConfig(\(json))")
     }
 
-    static func configJSON(voice: String, persona: String) -> String {
-        let obj = ["voice": voice, "persona": persona]
+    static func configJSON(mode: Mode, voice: String, persona: String) -> String {
+        let obj = ["mode": mode.rawValue, "name": mode.name, "voice": voice, "persona": persona]
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return String(decoding: data, as: UTF8.self)
     }

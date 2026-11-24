@@ -6,6 +6,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = ModelProcess()
     let web = WebController()
+    let prefs = Prefs()
     private var window: NSWindow!
     private var signalSources: [DispatchSourceSignal] = []
 
@@ -16,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
         }
 
-        let root = ContentView().environmentObject(model).environmentObject(web)
+        let root = ContentView().environmentObject(model).environmentObject(web).environmentObject(prefs)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
@@ -28,13 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        let defaults = UserDefaults.standard
-        // Move people still on the original terse default to the new warm preset.
-        if defaults.string(forKey: "persona") == Voices.legacyPersona {
-            defaults.set(Voices.defaultPersona, forKey: "persona")
-        }
-        model.start(voice: defaults.string(forKey: "voice") ?? "NATF2",
-                    persona: defaults.string(forKey: "persona") ?? Voices.defaultPersona)
+        model.start(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona)
 
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }

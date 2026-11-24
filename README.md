@@ -69,16 +69,20 @@ python -m personaplex_mlx.offline \
 
 ## Air: macOS app
 
-`macos/Air` wraps the model in a native macOS app called Air. Its PersonaPlex mode is named **Myra**. Open Air.app and talk to the model in its own window. There is no browser and no server left running.
+`macos/Air` is a native macOS app for talking to local speech models. It has two modes; pick one in Settings. Only one mode's models are loaded at a time.
 
-- When the app opens it starts the model as a child process bound to `127.0.0.1` on a free port, with `HF_HUB_OFFLINE=1`. Every file is read from the local Hugging Face cache.
-- Quitting the app stops the model. If the app crashes or is force-quit, the model process notices that its parent has gone and exits on its own.
-- Settings hold the voice and the persona. There are three persona presets (Warm companion, Thoughtful teacher, Coach) or you can write your own. Settings are remembered between launches and apply to the next conversation.
-- Each conversation is saved as a Markdown note in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md` and tagged with the mode. `Air Index.md` lists every session, newest first. The History tab reads these notes and can open any of them in Obsidian.
-- In Myra mode only the assistant's side is transcribed. PersonaPlex streams the text of what it says, not what you say.
-- Use headphones, because there is no echo cancellation.
+| Mode | How it works | Notes |
+| --- | --- | --- |
+| **Myra** | PersonaPlex 7B (this repo), full-duplex speech-to-speech | Very quick turn-taking and short replies. Your side is transcribed with Parakeet after the session. If the Mac slows down from heat, it skips pauses in your audio to catch up. |
+| **Aria** | Pipeline: energy VAD, then Parakeet TDT 0.6B speech-to-text, then Qwen3-4B-Instruct-2507 (4-bit, streamed), then Kokoro-82M text-to-speech (`af_heart`) | Fuller, in-depth answers. About 1-2 s from the end of your speech to the first audio. Talk any time to interrupt. Both sides are transcribed live. |
 
-Build and install (needs Xcode and an existing venv that has this package's dependencies installed):
+- When the app opens it starts the selected mode's model process, bound to `127.0.0.1` on a free port, with `HF_HUB_OFFLINE=1`. Every file is read from the local Hugging Face cache.
+- Quitting the app stops the models. If the app crashes or is force-quit, the model process notices that its parent has gone and exits on its own.
+- Settings hold the mode, the voice and the persona. The persona presets (Warm companion, Thoughtful teacher, Coach) are written in the style of NVIDIA's PersonaPlex prompts, or you can write your own. Settings are stored per mode.
+- Each conversation is saved as a Markdown note in the `Air` Obsidian vault (`~/Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air`), at `Sessions/YYYY/MM/YYYY-MM-DD HHmm.md`. Each note has the mode and model ids in its frontmatter and timestamped `You:` / `Myra:` / `Aria:` lines. `Air Index.md` lists every session. The History tab reads these notes and can open any of them in Obsidian.
+- Use headphones.
+
+Build and install (needs Xcode):
 
 ```bash
 cd macos/Air
@@ -86,7 +90,12 @@ cd macos/Air
 ./build.sh --install   # also copies it to /Applications/Air.app (quit Air first)
 ```
 
-By default the app runs `~/personaplex-mlx/.venv/bin/python`. To use a different venv, set `AIR_MYRA_PYTHON=/path/to/bin/python` when you build. The app bundles its own copy of `personaplex_mlx`, so the venv only needs the dependencies. The server log is written to `~/Library/Logs/Air/server.log`.
+Python environments:
+
+- `AIR_MYRA_PYTHON` defaults to `~/personaplex-mlx/.venv/bin/python`. This venv needs this package's dependencies; the app bundles its own copy of `personaplex_mlx`.
+- `AIR_ARIA_PYTHON` defaults to `~/Library/Application Support/Air/venv-smart/bin/python`. This venv has `mlx-audio`, `mlx-lm`, `misaki`, `spacy` with `en_core_web_sm`, `num2words`, `phonemizer-fork`, `espeakng-loader`, `scipy` and `aiohttp`. Install `misaki` without its `[en]` extra to avoid pulling in torch.
+
+Aria's models are `mlx-community/Qwen3-4B-Instruct-2507-4bit`, `mlx-community/parakeet-tdt-0.6b-v2` and `mlx-community/Kokoro-82M-bf16`. Download them once with `huggingface_hub.snapshot_download`. The server log is written to `~/Library/Logs/Air/server.log`.
 
 On first launch, allow microphone access when macOS asks. To use "Open in Obsidian", add the vault to Obsidian once: Open another vault → Open folder as vault → `Obsidian vaults/Air`.
 

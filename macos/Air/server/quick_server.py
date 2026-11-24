@@ -46,11 +46,14 @@ FRAME_SIZE = 1920
 TEXT_PAD_ID = 3  # "nothing to say this frame" token in the text stream
 
 
-from air_common import (  # noqa: E402  (shared with smart_server.py)
+import collections  # noqa: E402
+
+from air_common import (  # noqa: E402  (shared with aria_server.py)
     SessionRecorder,
     emit,
     ensure_vault,
     watch_parent,
+    write_index,
 )
 
 
@@ -94,6 +97,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=-1, help="-1 = new random seed per conversation")
     parser.add_argument("--text-temp", type=float, default=0.7)
     parser.add_argument("--text-topk", type=int, default=25)
+    parser.add_argument("--stt-python", default="", help="python with mlx-audio, for transcribing your side")
+    parser.add_argument("--stt-model", default="mlx-community/parakeet-tdt-0.6b-v2")
+    parser.add_argument("--lag-soft", type=float, default=1.0, help="s behind: skip quiet input frames")
+    parser.add_argument("--lag-hard", type=float, default=3.0, help="s behind: skip any input frames")
     parser.add_argument("--full-depformer", action="store_true",
                         help="also sample the (discarded) user-stream codebooks")
     parser.add_argument("--pad-bias", type=float, default=0.0,
@@ -231,7 +238,10 @@ def main() -> None:
         voice_path = resolve_voice_prompt(None, voice, voice_dir)
         audio_tokenizer = rustymimi.StreamTokenizer(files["mimi"], num_codebooks=8)  # type: ignore
         text_q: queue.Queue[str] = queue.Queue()
-        state = {"close": False, "steps": 0, "step_time": 0.0, "error": None}
+        state = {"close": False, "steps": 0, "step_time": 0.0, "error": None,
+                 "in_frames": 0, "done_frames": 0, "skipped": 0, "lag": 0.0, "lag_max": 0.0}
+        frame_rms: collections.deque = collections.deque()
+        mic_chunks: list[bytes] = []  # your side, 24 kHz int16, transcribed after the session
         loop = asyncio.get_running_loop()
         prepared = asyncio.Event()
         recorder: SessionRecorder | None = None
@@ -260,6 +270,17 @@ def main() -> None:
                 if tokens is None:
                     time.sleep(0.002)
                     continue
+                # Catch-up: when the model falls behind the microphone (a fanless Mac slows down
+                # as it heats up), skip quiet input frames, and past the hard limit any frames,
+                # so the delay cannot keep growing.
+                state["done_frames"] += 1
+                rms = frame_rms.popleft() if frame_rms else 0.0
+                lag = max(0.0, (state["in_frames"] - state["done_frames"]) * FRAME_SIZE / SAMPLE_RATE)
+                state["lag"] = lag
+                state["lag_max"] = max(state["lag_max"], lag)
+                if lag > args.lag_hard or (lag > args.lag_soft and rms < 0.01):
+                    state["skipped"] += 1
+                    continue
                 t_step = time.perf_counter()
                 model_input = mx.array(tokens).transpose(1, 0)[:, : gen.user_codebooks][:, :, None]
                 text_token = gen.step(input_tokens=model_input)
@@ -277,7 +298,8 @@ def main() -> None:
                 state["step_time"] += dt
                 state["win"] = state.get("win", 0.0) + dt
                 if state["steps"] % 125 == 0:  # every ~10 s of audio
-                    emit("PERF", f"step {state['steps']}: {8 * state['win']:.1f} ms/step over last 125")
+                    emit("PERF", f"step {state['steps']}: {8 * state['win']:.1f} ms/step over last 125, "
+                                 f"behind by {state['lag']:.1f}s, skipped {state['skipped']} frames")
                     state["win"] = 0.0
 
         async def recv_loop():
@@ -291,10 +313,17 @@ def main() -> None:
                     data = message.data
                     if not data or data[0] != 1:
                         continue
+                    mic_chunks.append(bytes(data[1:]))
                     pcm = np.frombuffer(data[1:], dtype="<i2").astype(np.float32) / 32768.0
                     buf = np.concatenate((buf, pcm))
                     while buf.shape[-1] >= FRAME_SIZE:
-                        audio_tokenizer.encode(buf[:FRAME_SIZE])  # non-blocking, runs on mimi's thread
+                        frame = buf[:FRAME_SIZE]
+                        level = float(np.sqrt(np.mean(frame * frame)))
+                        frame_rms.append(level)
+                        if level > 0.02:  # you are talking: Myra's next words start a new line
+                            state["you_t"] = time.monotonic()
+                        state["in_frames"] += 1
+                        audio_tokenizer.encode(frame)  # non-blocking, runs on mimi's thread
                         buf = buf[FRAME_SIZE:]
             finally:
                 state["close"] = True
@@ -312,10 +341,20 @@ def main() -> None:
                             break
                         pcm16 = (np.clip(decoded, -1.0, 1.0) * 32767.0).astype("<i2")
                         await ws.send_bytes(b"\x01" + pcm16.tobytes())
+                    now = time.monotonic()
+                    if now - state.get("lag_sent", 0.0) > 1.0:
+                        state["lag_sent"] = now
+                        await ws.send_bytes(b"\x08" + f"{state['lag']:.1f}".encode())
                     while not text_q.empty():
                         piece = text_q.get_nowait()
                         if recorder is not None:
-                            recorder.add_text(piece)
+                            now_t = time.monotonic()
+                            new_line = (state.get("you_t", 0.0) > state.get("piece_t", 0.0)
+                                        and now_t - state.get("line_t", 0.0) > 4.0)
+                            if new_line:
+                                state["line_t"] = now_t
+                            state["piece_t"] = now_t
+                            recorder.add_text(piece, new_line=new_line)
                         await ws.send_bytes(b"\x02" + piece.encode("utf-8"))
                 except (aiohttp.ClientConnectionResetError, ConnectionResetError):
                     state["close"] = True
@@ -351,16 +390,58 @@ def main() -> None:
                 state["close"] = True
                 await asyncio.to_thread(worker.join, 5)
                 path = recorder.finish()
+                if path is not None and args.stt_python and mic_chunks:
+                    await transcribe_user_side(recorder, b"".join(mic_chunks))
                 if path is not None:
                     emit("SESSION_SAVED", str(path))
                 if state["steps"]:
                     ms = 1000 * state["step_time"] / state["steps"]
                     emit("STATUS", f"session end: {state['steps']} steps, {ms:.1f} ms/step "
-                                   f"({80.0 / ms:.2f}x realtime), "
+                                   f"({80.0 / ms:.2f}x realtime), behind by {state['lag']:.1f}s at end "
+                                   f"(max {state['lag_max']:.1f}s, skipped {state['skipped']} frames), "
                                    f"peak {mx.get_peak_memory() / 1e9:.2f}GB")
                 else:
                     emit("STATUS", "session end")
         return ws
+
+    async def transcribe_user_side(recorder, pcm24: bytes) -> None:
+        """After the session: transcribe your microphone with Parakeet (Aria's venv, a short-lived
+        helper process) and interleave 'You' lines by time. The audio is deleted afterwards."""
+        import tempfile
+        import wave
+
+        if len(pcm24) < SAMPLE_RATE * 2:  # under 1 s
+            return
+        emit("STATUS", "transcribing your side of the conversation")
+        cache = Path.home() / "Library/Caches/Air"
+        cache.mkdir(parents=True, exist_ok=True)
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", dir=cache)
+        os.close(fd)
+        try:
+            with wave.open(wav_path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes(pcm24)
+            env = dict(os.environ, HF_HUB_OFFLINE="1", PYTHONNOUSERSITE="1")
+            env.pop("PYTHONPATH", None)
+            t0 = time.time()
+            proc = await asyncio.create_subprocess_exec(
+                args.stt_python, "-s", str(Path(__file__).with_name("transcribe.py")),
+                wav_path, args.stt_model, env=env,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await proc.communicate()
+            sentences = json.loads(out.decode().strip().splitlines()[-1]) if out.strip() else []
+            for seg in sentences:
+                recorder.add_segment(seg["start"], "You", seg["text"])
+            recorder.user_side = True
+            recorder.save(final=True)
+            write_index(recorder.vault)
+            emit("STATUS", f"transcribed your side: {len(sentences)} sentences in {time.time() - t0:.1f}s")
+        except Exception as exc:
+            emit("ERROR", f"could not transcribe your side: {exc!r}")
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
 
     async def handle_root(_):
         resp = web.FileResponse(ui_dir / "index.html")

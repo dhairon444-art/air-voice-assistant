@@ -45,25 +45,34 @@
   .transcript .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 6px; }
   .empty { color: var(--muted); font-style: italic; }
   .saved { font-size: 12px; color: var(--muted); }
+  .who { font-weight: 600; margin-right: 6px; }
+  .who.you { color: #34d399; }
+  .who.ai { color: var(--accent); }
+  .done { display: none; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    border-radius: 999px; padding: 6px 16px; font: 13px -apple-system, sans-serif; cursor: pointer; }
+  .done.show { display: inline-block; }
 </style>
 </head>
 <body>
-  <div class="hint" role="note">🎧 <b>Use headphones.</b> Myra has no echo cancellation, so through speakers it can hear itself and talk over you.</div>
+  <div class="hint" role="note" id="hint">🎧 <b>Use headphones.</b> <span id="hintText"></span></div>
   <main>
     <section class="stage">
       <button id="orb" class="orb" aria-label="Start conversation"><span class="ring" id="ring"></span><span id="orbLabel">Start</span></button>
       <div class="status" id="status">Ready. Press Start and talk.</div>
+      <div class="status" id="lag" style="display:none;color:#fb7185;font-size:12px"></div>
+      <button class="done" id="doneBtn" title="End your turn now instead of waiting for the pause">Done talking</button>
       <div class="meta" id="meta"></div>
-      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span>Myra<span class="bar"><i id="outBar"></i></span></span></div>
+      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span id="aiLabel">Myra<span class="bar"><i id="outBar"></i></span></span></div>
     </section>
     <section class="transcript" id="transcriptBox" aria-live="polite">
-      <h2>Myra said</h2>
-      <div id="transcript"><p class="empty">The text of what Myra says appears here. Your own speech is not transcribed.</p></div>
+      <h2 id="trHead">Conversation</h2>
+      <div id="transcript"><p class="empty" id="emptyNote"></p></div>
     </section>
   </main>
 <script>
 (() => {
-  const cfg = Object.assign({ voice: 'NATF2', persona: '' }, window.airConfig || {});
+  const cfg = Object.assign({ mode: 'myra', name: 'Myra', voice: 'NATF2', persona: '' }, window.airConfig || {});
+  const isAria = () => cfg.mode === 'aria';
   const $ = (id) => document.getElementById(id);
   const orb = $('orb'), label = $('orbLabel'), statusEl = $('status'), meta = $('meta');
   const transcript = $('transcript'), box = $('transcriptBox');
@@ -73,12 +82,39 @@
   const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
   const setStatus = (t) => { statusEl.textContent = t; };
   const renderMeta = () => {
-    meta.textContent = `Voice ${cfg.voice} · ${cfg.persona ? cfg.persona : 'default persona'}`;
+    meta.textContent = `${cfg.name} · voice ${cfg.voice} · ${cfg.persona ? cfg.persona : 'default persona'}`;
+    $('aiLabel').firstChild.textContent = cfg.name;
+    $('hintText').textContent = isAria()
+      ? `${cfg.name} stops talking when you start, so through speakers it may interrupt itself.`
+      : `${cfg.name} has no echo cancellation, so through speakers it can hear itself and talk over you.`;
+    const empty = $('emptyNote');
+    if (empty) empty.textContent = isAria()
+      ? 'Both sides of the conversation appear here. Pause briefly when you finish and Aria replies.'
+      : `The text of what ${cfg.name} says appears here. Your own speech is not transcribed in this mode.`;
   };
   window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); };
   renderMeta();
 
   function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+
+  function addLine(who, text) {
+    if (transcript.querySelector('.empty')) transcript.innerHTML = '';
+    const p = document.createElement('p');
+    const t = document.createElement('span'); t.className = 't'; t.textContent = fmt((performance.now() - startTime) / 1000);
+    const w = document.createElement('span'); w.className = 'who ' + (who === 'You' ? 'you' : 'ai'); w.textContent = who;
+    p.append(t, w, document.createTextNode(text));
+    transcript.appendChild(p);
+    box.scrollTop = box.scrollHeight;
+    return p;
+  }
+  let aiP = null;
+  function addAria(text) {
+    if (!aiP) aiP = addLine(cfg.name, '');
+    aiP.lastChild.textContent += text;
+    box.scrollTop = box.scrollHeight;
+  }
+  const states = { listening: () => 'Listening… just talk.', hearing: () => 'Hearing you…',
+    thinking: () => `${cfg.name} is thinking…`, speaking: () => `${cfg.name} is speaking. Talk any time to interrupt.` };
 
   function addText(piece) {
     const now = performance.now();
@@ -109,13 +145,13 @@
       mic = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (err) {
       orb.classList.remove('busy'); label.textContent = 'Start';
-      setStatus('Microphone unavailable: ' + (err && err.message ? err.message : err) + '. Check System Settings › Privacy & Security › Microphone › Myra.');
+      setStatus('Microphone unavailable: ' + (err && err.message ? err.message : err) + '. Check System Settings › Privacy & Security › Microphone › Air.');
       return;
     }
-    transcript.innerHTML = '<p class="empty">Preparing Myra with your persona and voice…</p>';
+    transcript.innerHTML = `<p class="empty">Preparing ${cfg.name} with your persona and voice…</p>`;
     curP = null;
     setStatus('Preparing persona and voice…');
-    const q = new URLSearchParams({ voice: cfg.voice || 'NATF2', persona: cfg.persona || '' });
+    const q = new URLSearchParams({ mode: cfg.mode, voice: cfg.voice || '', persona: cfg.persona || '' });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {
@@ -127,8 +163,24 @@
         const f = new Float32Array(pcm.length);
         for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
         if (player) player.port.postMessage(f.buffer, [f.buffer]);
-      } else if (kind === 2) { addText(new TextDecoder().decode(data.slice(1))); }
+      } else if (kind === 2) {
+        const txt = new TextDecoder().decode(data.slice(1));
+        if (isAria()) addAria(txt); else addText(txt);
+      }
       else if (kind === 3) { setStatus(new TextDecoder().decode(data.slice(1))); }
+      else if (kind === 8) {
+        const lag = parseFloat(new TextDecoder().decode(data.slice(1)));
+        const el = $('lag');
+        el.style.display = lag >= 0.8 ? 'block' : 'none';
+        el.textContent = `Falling behind by ${lag.toFixed(1)} s, catching up (skipping pauses)`;
+      }
+      else if (kind === 5) { aiP = null; addLine('You', new TextDecoder().decode(data.slice(1))); }
+      else if (kind === 6) { if (player) player.port.postMessage('reset'); aiP = null; }
+      else if (kind === 7) {
+        const st = new TextDecoder().decode(data.slice(1));
+        if (st === 'listening' || st === 'hearing') aiP = null;
+        if (live && states[st]) setStatus(states[st]());
+      }
     };
     ws.onclose = () => { stop(true); };
     ws.onerror = () => { setStatus('Lost connection to the model.'); };
@@ -137,9 +189,10 @@
   function goLive() {
     live = true; startTime = performance.now();
     if (transcript.querySelector('.empty')) transcript.innerHTML = '<p class="empty">Listening… say hello.</p>';
+    $('doneBtn').classList.toggle('show', isAria());
     orb.classList.remove('busy'); orb.classList.add('live'); label.textContent = 'End';
     orb.setAttribute('aria-label', 'End conversation');
-    setStatus('Live. Talk to Myra.');
+    setStatus(`Live. Talk to ${cfg.name}.`);
     src = ctx.createMediaStreamSource(mic);
     capture = new AudioWorkletNode(ctx, 'air-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
     capture.port.onmessage = (e) => {
@@ -167,6 +220,8 @@
     if (player) { try { player.disconnect(); } catch (_) {} player = null; }
     if (mic) { mic.getTracks().forEach((t) => t.stop()); mic = null; }
     $('micBar').style.width = '0'; $('outBar').style.width = '0';
+    $('doneBtn').classList.remove('show');
+    $('lag').style.display = 'none';
     orb.classList.remove('live', 'busy'); label.textContent = 'Start';
     orb.setAttribute('aria-label', 'Start conversation');
     if (wasLive) {
@@ -177,6 +232,9 @@
     }
   }
 
+  $('doneBtn').addEventListener('click', () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'end_turn' }));
+  });
   orb.addEventListener('click', () => { if (live) stop(false); else if (!ws) start(); });
   window.airStop = () => stop(false);
   window.addEventListener('keydown', (e) => { if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); orb.click(); } });

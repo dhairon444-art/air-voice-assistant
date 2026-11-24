@@ -34,20 +34,22 @@ final class ModelProcess: ObservableObject {
         return dir.appendingPathComponent("server.log")
     }()
 
-    var pythonPath: String {
-        if let override = UserDefaults.standard.string(forKey: "pythonPath"), !override.isEmpty {
-            return override
-        }
-        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: "AirMyraPythonPath") as? String {
+    @Published private(set) var mode: Mode = .myra
+
+    func pythonPath(for mode: Mode) -> String {
+        if let fromPlist = Bundle.main.object(forInfoDictionaryKey: mode.pythonInfoKey) as? String,
+           !fromPlist.isEmpty, !fromPlist.hasPrefix("__") {
             return (fromPlist as NSString).expandingTildeInPath
         }
-        return NSHomeDirectory() + "/personaplex-mlx/.venv/bin/python"
+        return mode.defaultPython
     }
+    var pythonPath: String { pythonPath(for: mode) }
 
-    func start(voice: String, persona: String) {
+    func start(mode: Mode, voice: String, persona: String) {
+        self.mode = mode
         guard process == nil else { return }
         let res = Bundle.main.resourceURL!
-        let server = res.appendingPathComponent("server/quick_server.py").path
+        let server = res.appendingPathComponent("server/" + mode.script).path
         let ui = res.appendingPathComponent("ui").path
         let pyLib = res.appendingPathComponent("python").path
 
@@ -66,7 +68,7 @@ final class ModelProcess: ObservableObject {
             "--vault", Vault.url.path,
             "--ui-dir", ui,
             "--parent-pid", String(getpid()),
-            "-q", "4",
+        ] + (mode == .myra ? ["-q", "4", "--stt-python", pythonPath(for: .aria)] : []) + [
             "--voice", voice,
             "--text-prompt", persona,
         ]
@@ -114,9 +116,9 @@ final class ModelProcess: ObservableObject {
 
     func noteSessionsChanged() { sessionsChanged += 1 }
 
-    func restart(voice: String, persona: String) {
+    func restart(mode: Mode, voice: String, persona: String) {
         stop()
-        start(voice: voice, persona: persona)
+        start(mode: mode, voice: voice, persona: persona)
     }
 
     /// Terminate the child and wait (bounded) until it is gone.

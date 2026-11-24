@@ -219,17 +219,25 @@ class SessionRecorder:
         self.path = path
         _active_recorders.add(self)
 
-    def add_text(self, piece: str, speaker: str | None = None) -> None:
+    def add_text(self, piece: str, speaker: str | None = None, new_line: bool = False) -> None:
         speaker = speaker or self.assistant
         now = time.monotonic()
         with self.lock:
             last = self.segments[-1] if self.segments else None
-            if (last is None or last[1] != speaker
+            if (new_line or last is None or last[1] != speaker
                     or now - self.last_mono.get(speaker, 0.0) > GAP_NEW_LINE_S):
                 self.segments.append([now - self.start_mono, speaker, piece.lstrip()])
             else:
                 last[2] += piece
             self.last_mono[speaker] = now
+
+    def add_segment(self, offset: float, speaker: str, text: str) -> None:
+        """Insert a finished segment at a known time (e.g. from post-session transcription)."""
+        with self.lock:
+            for o, sp, t in self.segments[-6:]:
+                if sp == speaker and t.strip() == text.strip() and abs(o - offset) < 3.0:
+                    return  # duplicate (e.g. overlapping transcription chunks)
+            self.segments.append([max(0.0, offset), speaker, text])
 
     def has_text(self) -> bool:
         with self.lock:
@@ -239,7 +247,8 @@ class SessionRecorder:
         end = self.end or datetime.now()
         duration = (end - self.start).total_seconds()
         with self.lock:
-            segs = [(o, sp, t.strip()) for o, sp, t in self.segments if t.strip()]
+            segs = sorted(((o, sp, t.strip()) for o, sp, t in self.segments if t.strip()),
+                          key=lambda seg: seg[0])
         words = sum(len(t.split()) for _, sp, t in segs if sp == self.assistant)
         user_words = sum(len(t.split()) for _, sp, t in segs if sp != self.assistant)
         title = self.start.strftime("%a %d %b %Y, %H:%M")
@@ -265,7 +274,7 @@ class SessionRecorder:
             stats_row = (f"| {self.start.strftime('%H:%M:%S')} | {end.strftime('%H:%M:%S')} | "
                          f"{fmt_duration(duration)} | {self.mode} | {self.voice} | {words} | {user_words} |")
             note = ["> [!note] Both sides",
-                    f"> Your lines come from the model's own speech recognition, so expect small mistakes."]
+                    "> Your lines come from on-device speech recognition (Parakeet), so expect small mistakes."]
         else:
             stats_head = f"| Started | Ended | Duration | Mode | Voice | Words from {self.assistant} |"
             stats_sep = "| --- | --- | --- | --- | --- | --- |"

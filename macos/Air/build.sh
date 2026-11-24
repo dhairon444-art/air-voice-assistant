@@ -2,7 +2,8 @@
 # Build Air.app from the command line (no Xcode project needed).
 #   ./build.sh            -> builds macos/Air/build/Air.app
 #   ./build.sh --install  -> also copies it to /Applications/Air.app
-# Environment: AIR_MYRA_PYTHON=/path/to/venv/bin/python (default: ~/personaplex-mlx/.venv/bin/python)
+# Environment: AIR_MYRA_PYTHON (PersonaPlex venv, default ~/personaplex-mlx/.venv/bin/python)
+#              AIR_ARIA_PYTHON (mlx-audio/mlx-lm venv, default ~/Library/Application Support/Air/venv-smart/bin/python)
 set -euo pipefail
 # SwiftUI macros (@State) need the full Xcode toolchain, not just the Command Line Tools.
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
@@ -13,6 +14,7 @@ REPO="${HERE:h:h}"
 BUILD="$HERE/build"
 APP="$BUILD/Air.app"
 PYTHON="${AIR_MYRA_PYTHON:-$HOME/personaplex-mlx/.venv/bin/python}"
+ARIA_PYTHON="${AIR_ARIA_PYTHON:-$HOME/Library/Application Support/Air/venv-smart/bin/python}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/server" "$APP/Contents/Resources/python"
@@ -23,7 +25,7 @@ xcrun swiftc -O -parse-as-library -target arm64-apple-macos14.0 \
   -framework AppKit -framework SwiftUI -framework WebKit -framework AVFoundation
 
 echo "==> Resources"
-sed "s#__PYTHON__#${PYTHON}#" "$HERE/Resources/Info.plist" > "$APP/Contents/Info.plist"
+sed -e "s#__PYTHON__#${PYTHON}#" -e "s#__ARIA_PYTHON__#${ARIA_PYTHON}#" "$HERE/Resources/Info.plist" > "$APP/Contents/Info.plist"
 cp -R "$HERE/Resources/ui" "$APP/Contents/Resources/ui"
 cp "$HERE"/server/*.py "$APP/Contents/Resources/server/"
 rsync -a --exclude '__pycache__' "$REPO/personaplex_mlx" "$APP/Contents/Resources/python/"

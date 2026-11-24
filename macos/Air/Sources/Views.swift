@@ -13,44 +13,10 @@ enum Tab: String, CaseIterable, Identifiable {
     }
 }
 
-enum Voices {
-    static let all: [(id: String, label: String)] = [
-        ("NATF0", "Natural female 0"), ("NATF1", "Natural female 1"),
-        ("NATF2", "Natural female 2"), ("NATF3", "Natural female 3"),
-        ("NATM0", "Natural male 0"), ("NATM1", "Natural male 1"),
-        ("NATM2", "Natural male 2"), ("NATM3", "Natural male 3"),
-        ("VARF0", "Variety female 0"), ("VARF1", "Variety female 1"),
-        ("VARF2", "Variety female 2"), ("VARF3", "Variety female 3"),
-        ("VARF4", "Variety female 4"),
-        ("VARM0", "Variety male 0"), ("VARM1", "Variety male 1"),
-        ("VARM2", "Variety male 2"), ("VARM3", "Variety male 3"),
-        ("VARM4", "Variety male 4"),
-    ]
-    static let legacyPersona = "You are Myra, a warm and curious companion. Listen carefully, answer clearly and keep the conversation natural."
-    static var defaultPersona: String { Personas.presets[0].text }
-}
-
-/// Persona presets, phrased the way NVIDIA's PersonaPlex examples are ("You enjoy having a good
-/// conversation." / "You are a wise and friendly teacher..." + scenario + persona details).
-enum Personas {
-    static let presets: [(name: String, text: String)] = [
-        ("Warm companion",
-         "You enjoy having a good conversation. Your name is Myra, and you are a warm, kind and encouraging friend who is genuinely curious about the person you are talking to. Have a relaxed, friendly conversation. Give full, thoughtful answers of several sentences, explain things with examples, share your own view, and then ask a gentle follow-up question. Always be patient, supportive and positive; never sarcastic, dismissive or rude."),
-        ("Thoughtful teacher",
-         "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way. Your name is Myra. Explain ideas step by step with simple, everyday examples, check whether the explanation makes sense, and encourage curiosity with a follow-up question. Be patient and kind, never condescending."),
-        ("Coach",
-         "You enjoy having a good conversation. Your name is Myra, and you are an upbeat, supportive life coach. Help the person think through their goals and challenges. Listen carefully, reflect back what you heard, offer practical ideas in a few clear steps, and ask an encouraging question to keep them going. Be warm and motivating, never judgmental."),
-    ]
-    static func name(for text: String) -> String {
-        presets.first { $0.text == text }?.name ?? "Custom"
-    }
-}
-
 struct ContentView: View {
     @EnvironmentObject var model: ModelProcess
     @EnvironmentObject var web: WebController
-    @AppStorage("voice") private var voice = "NATF2"
-    @AppStorage("persona") private var persona = Voices.defaultPersona
+    @EnvironmentObject var prefs: Prefs
     // `-AirInitialTab History` on the command line opens another tab first (used for testing).
     @State private var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "AirInitialTab") ?? "") ?? .talk
 
@@ -78,12 +44,16 @@ struct ContentView: View {
         }
         .onChange(of: model.state) { _, s in
             switch s {
-            case .ready(let port): web.load(port: port, voice: voice, persona: persona)
+            case .ready(let port): web.load(port: port, mode: model.mode, voice: prefs.voice, persona: prefs.persona)
             default: web.unload()
             }
         }
-        .onChange(of: voice) { _, v in web.updateConfig(voice: v, persona: persona) }
-        .onChange(of: persona) { _, p in web.updateConfig(voice: voice, persona: p) }
+        .onChange(of: prefs.voice) { _, v in web.updateConfig(mode: prefs.mode, voice: v, persona: prefs.persona) }
+        .onChange(of: prefs.persona) { _, p in web.updateConfig(mode: prefs.mode, voice: prefs.voice, persona: p) }
+        .onChange(of: prefs.mode) { _, m in
+            // Only one mode's models are loaded at a time: switching restarts the model process.
+            model.restart(mode: m, voice: prefs.voice, persona: prefs.persona)
+        }
     }
 
     @ViewBuilder var talkView: some View {
@@ -91,7 +61,7 @@ struct ContentView: View {
         case .ready:
             WebViewHost(controller: web)
         case .failed(let msg):
-            FailedView(message: msg) { model.restart(voice: voice, persona: persona) }
+            FailedView(message: msg) { model.restart(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona) }
         default:
             LoadingView()
         }
@@ -103,14 +73,14 @@ struct LoadingView: View {
     var body: some View {
         VStack(spacing: 18) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96)
-            Text("Myra is waking up").font(.title2.weight(.semibold))
+            Text("\(model.mode.name) is waking up").font(.title2.weight(.semibold))
             ProgressView().controlSize(.large)
             Text(model.status).foregroundStyle(.secondary)
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 Text("\(Int(ctx.date.timeIntervalSince(model.startedAt)))s · first load can take a minute or two")
                     .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
             }
-            Text("🎧 Use headphones: Myra has no echo cancellation.")
+            Text("🎧 Use headphones: \(model.mode.name) has no echo cancellation.")
                 .font(.callout).padding(.top, 8)
         }
         .padding(40)
@@ -243,34 +213,43 @@ struct SessionDetail: View {
 struct SettingsView: View {
     @EnvironmentObject var model: ModelProcess
     @EnvironmentObject var web: WebController
-    @AppStorage("voice") private var voice = "NATF2"
-    @AppStorage("persona") private var persona = Voices.defaultPersona
+    @EnvironmentObject var prefs: Prefs
 
     var body: some View {
         Form {
             Section {
-                Picker("Voice", selection: $voice) {
-                    ForEach(Voices.all, id: \.id) { v in Text("\(v.id) · \(v.label)").tag(v.id) }
+                Picker("Mode", selection: $prefs.mode) {
+                    ForEach(Mode.allCases) { m in Text(m.name).tag(m) }
+                }
+                .pickerStyle(.segmented)
+                .disabled(web.live)
+            } footer: {
+                Text(prefs.mode.tagline + (web.live ? " End the conversation to switch modes." : ""))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Voice", selection: $prefs.voice) {
+                    ForEach(prefs.mode.voices, id: \.id) { v in Text("\(v.id) · \(v.label)").tag(v.id) }
                 }
             } footer: {
-                Text("NAT voices are natural recordings, VAR voices add variety. Changes apply to the next conversation.")
+                Text(prefs.mode.voiceFooter)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Picker("Preset", selection: Binding(
-                    get: { Personas.name(for: persona) },
+                    get: { Personas.presetName(for: prefs.persona, mode: prefs.mode) },
                     set: { name in
-                        if let p = Personas.presets.first(where: { $0.name == name }) { persona = p.text }
+                        if let p = Personas.presets(for: prefs.mode).first(where: { $0.name == name }) { prefs.persona = p.text }
                     })) {
-                    ForEach(Personas.presets, id: \.name) { Text($0.name).tag($0.name) }
+                    ForEach(Personas.presets(for: prefs.mode), id: \.name) { Text($0.name).tag($0.name) }
                     Text("Custom").tag("Custom")
                 }
-                TextEditor(text: $persona)
+                TextEditor(text: $prefs.persona)
                     .font(.body)
                     .frame(minHeight: 120)
                 HStack {
                     Spacer()
-                    Button("Reset to default") { persona = Voices.defaultPersona }
+                    Button("Reset to default") { prefs.persona = Personas.defaultText(for: prefs.mode) }
                 }
             } header: {
                 Text("Persona")
@@ -289,10 +268,10 @@ struct SettingsView: View {
             }
             Section("Model") {
                 LabeledContent("Python", value: model.pythonPath)
-                LabeledContent("Mode", value: "Myra")
-                LabeledContent("Model", value: "nvidia/personaplex-7b-v1 · 4-bit · offline · 127.0.0.1 only")
+                LabeledContent("Running", value: model.mode.name)
+                LabeledContent("Models", value: model.mode.modelDescription + " · offline · 127.0.0.1 only")
                 HStack {
-                    Button("Restart model") { model.restart(voice: voice, persona: persona) }
+                    Button("Restart model") { model.restart(mode: prefs.mode, voice: prefs.voice, persona: prefs.persona) }
                         .disabled(web.live)
                     Button("Show log") { NSWorkspace.shared.open(ModelProcess.logURL) }
                 }
