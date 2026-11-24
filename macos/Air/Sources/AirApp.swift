@@ -17,6 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
         }
 
+        web.onSetting = { [weak self] key, value in
+            guard let self else { return }
+            if key == "voice" { self.prefs.voice = Voices.valid(value) }
+        }
         let root = ContentView().environmentObject(model).environmentObject(web).environmentObject(prefs)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

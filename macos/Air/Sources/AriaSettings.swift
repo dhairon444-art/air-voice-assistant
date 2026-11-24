@@ -15,15 +15,17 @@ enum Brain: String, CaseIterable, Identifiable {
     var canThink: Bool { self != .fast }
 }
 
+/// The five best Kokoro voices, by Kokoro's own quality grades (VOICES.md).
 enum Voices {
-    static let all: [(id: String, label: String)] = [
-        ("af_heart", "Heart (warm, American)"), ("af_bella", "Bella (American)"),
-        ("af_nicole", "Nicole (soft, American)"), ("af_aoede", "Aoede (American)"),
-        ("af_kore", "Kore (American)"), ("af_sarah", "Sarah (American)"),
-        ("af_nova", "Nova (American)"), ("af_sky", "Sky (American)"),
-        ("bf_emma", "Emma (British)"), ("bf_isabella", "Isabella (British)"),
+    static let all: [(id: String, name: String, note: String)] = [
+        ("af_heart", "Heart", "warmest, highest-rated"),
+        ("af_bella", "Bella", "bright, American"),
+        ("af_nicole", "Nicole", "soft, made for headphones"),
+        ("bf_emma", "Emma", "British"),
+        ("af_sarah", "Sarah", "clear, American"),
     ]
     static let defaultVoice = "af_heart"
+    static func valid(_ v: String?) -> String { all.contains { $0.id == v } ? v! : defaultVoice }
 }
 
 /// Personality presets (rewritten as layered specs later in this round).
@@ -48,7 +50,7 @@ final class Prefs: ObservableObject {
     @Published var persona: String { didSet { d.set(persona, forKey: "ariaPersona") } }
 
     init() {
-        voice = d.string(forKey: "ariaVoice") ?? Voices.defaultVoice
+        voice = Voices.valid(d.string(forKey: "ariaVoice"))
         brain = Brain(rawValue: d.string(forKey: "ariaBrain") ?? "") ?? .fast
         persona = d.string(forKey: "ariaPersona") ?? Personas.defaultText
     }

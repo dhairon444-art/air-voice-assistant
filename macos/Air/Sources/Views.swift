@@ -226,14 +226,6 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Picker("Voice", selection: $prefs.voice) {
-                    ForEach(Voices.all, id: \.id) { v in Text("\(v.id) · \(v.label)").tag(v.id) }
-                }
-            } footer: {
-                Text("Kokoro voices. Changes apply to the next conversation.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section {
                 Picker("Preset", selection: Binding(
                     get: { Personas.presetName(for: prefs.persona) },
                     set: { name in

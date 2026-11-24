@@ -9,6 +9,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published var live = false
     private var loadedPort: Int?
     var onSessionEnded: (() -> Void)?
+    /// Settings changed from the Talk page (voice and personality pickers).
+    var onSetting: ((String, String) -> Void)?
 
     override init() {
         let config = WKWebViewConfiguration()
@@ -48,7 +50,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     }
 
     static func configJSON(voice: String, persona: String) -> String {
-        let obj = ["mode": "aria", "name": "Aria", "voice": voice, "persona": persona]
+        let obj: [String: Any] = ["mode": "aria", "name": "Aria", "voice": voice, "persona": persona,
+                                  "voices": Voices.all.map { ["id": $0.id, "name": $0.name, "note": $0.note] }]
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return String(decoding: data, as: UTF8.self)
     }
@@ -76,6 +79,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     // MARK: messages from the page
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        if type == "set", let key = body["key"] as? String, let value = body["value"] as? String {
+            onSetting?(key, value)
+            return
+        }
         if type == "state", let s = body["state"] as? String {
             live = (s == "live")
             if s == "ended" { onSessionEnded?() }

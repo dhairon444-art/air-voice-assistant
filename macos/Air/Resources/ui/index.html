@@ -46,6 +46,15 @@
   .empty { color: var(--muted); font-style: italic; }
   .saved { font-size: 12px; color: var(--muted); }
   .who { font-weight: 600; margin-right: 6px; }
+  .pickrow { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; max-width: 760px; }
+  .pickrow .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); border-radius: 999px; padding: 4px 6px 4px 12px; font: 13px -apple-system, sans-serif; cursor: pointer; }
+  .pill.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .pill small { color: var(--muted); font-size: 11px; }
+  .pill .play { border: 0; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text);
+    width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 10px; line-height: 22px; padding: 0; }
+  .pickrow.locked .pill { opacity: .55; cursor: not-allowed; }
   .who.you { color: #34d399; }
   .who.ai { color: var(--accent); }
   .done { display: none; border: 1px solid var(--border); background: var(--panel); color: var(--text);
@@ -57,6 +66,7 @@
   <div class="hint" role="note" id="hint">🎧 <b>Use headphones.</b> <span id="hintText"></span></div>
   <main>
     <section class="stage">
+      <div class="pickrow" id="voiceRow" aria-label="Voice"></div>
       <button id="orb" class="orb" aria-label="Start conversation"><span class="ring" id="ring"></span><span id="orbLabel">Start</span></button>
       <div class="status" id="status">Ready. Press Start and talk.</div>
       <div class="status" id="lag" style="display:none;color:#fb7185;font-size:12px"></div>
@@ -92,8 +102,46 @@
       ? 'Both sides of the conversation appear here. Pause briefly when you finish and Aria replies.'
       : `The text of what ${cfg.name} says appears here. Your own speech is not transcribed in this mode.`;
   };
-  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); };
+  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); renderVoices(); };
+
+  // ---- voice picker (five best Kokoro voices, with previews) ----
+  let previewAudio = null;
+  function renderVoices() {
+    const row = $('voiceRow');
+    row.innerHTML = '<span class="lbl">Voice</span>';
+    (cfg.voices || []).forEach((v) => {
+      const pill = document.createElement('span');
+      pill.className = 'pill' + (v.id === cfg.voice ? ' on' : '');
+      pill.title = v.note;
+      pill.setAttribute('role', 'button');
+      pill.innerHTML = `<span>${v.name}</span><small>${v.note}</small>`;
+      const play = document.createElement('button');
+      play.className = 'play'; play.textContent = '▶'; play.title = `Hear ${v.name}`;
+      play.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (live) return;
+        play.textContent = '…';
+        try {
+          if (previewAudio) previewAudio.pause();
+          previewAudio = new Audio(`/api/preview?voice=${encodeURIComponent(v.id)}`);
+          previewAudio.onended = () => { play.textContent = '▶'; };
+          await previewAudio.play();
+          play.textContent = '■';
+        } catch (_) { play.textContent = '▶'; }
+      });
+      pill.appendChild(play);
+      pill.addEventListener('click', () => {
+        if (live) return;
+        cfg.voice = v.id;
+        post({ type: 'set', key: 'voice', value: v.id });
+        renderVoices(); renderMeta();
+      });
+      row.appendChild(pill);
+    });
+    row.classList.toggle('locked', live);
+  }
   renderMeta();
+  renderVoices();
 
   function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 
@@ -208,6 +256,7 @@
     player.port.onmessage = (e) => { $('outBar').style.width = Math.min(100, e.data.level * 400) + '%'; };
     player.connect(ctx.destination);
     post({ type: 'state', state: 'live' });
+    renderVoices();
   }
 
   function stop(fromClose) {
@@ -224,6 +273,7 @@
     $('lag').style.display = 'none';
     orb.classList.remove('live', 'busy'); label.textContent = 'Start';
     orb.setAttribute('aria-label', 'Start conversation');
+    renderVoices();
     if (wasLive) {
       setStatus('Conversation ended. Saved to the Air vault in Obsidian (see History).');
       post({ type: 'state', state: 'ended' });

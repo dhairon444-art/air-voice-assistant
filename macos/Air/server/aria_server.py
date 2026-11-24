@@ -55,9 +55,9 @@ SPOKEN_STYLE = (
     "small mistakes; infer what they meant. Keep each reply to about three to six sentences "
     "so the conversation stays a back-and-forth; go longer only when the user asks for detail."
 )
-FEMALE_VOICES = ["af_heart", "af_bella", "af_nicole", "af_aoede", "af_kore", "af_sarah",
-                 "af_nova", "af_sky", "af_jessica", "af_river", "af_alloy", "bf_emma",
-                 "bf_isabella", "bf_alice", "bf_lily"]
+# The five best Kokoro voices by Kokoro's own quality grades (VOICES.md): A, A-, B-, B-, C+.
+VOICES = ["af_heart", "af_bella", "af_nicole", "bf_emma", "af_sarah"]
+PREVIEW_TEXT = "Hi, I'm Aria. This is how I sound when we talk. Ask me anything, and I'll tell you straight."
 
 MIC_RATE = 24000
 STT_RATE = 16000
@@ -166,7 +166,7 @@ def main() -> None:
         stt.generate(mx.array((rng.standard_normal(int(STT_RATE * secs)) * 0.05).astype(np.float32)))
     emit("STATUS", f"Warm-up: speech recognition {time.time() - tw:.1f}s")
     tw = time.time()
-    for _ in tts.generate("Hello there.", voice=args.voice):
+    for _ in tts.generate("Hello there.", voice=args.voice, lang_code=args.voice[0]):
         pass
     emit("STATUS", f"Warm-up: voice {time.time() - tw:.1f}s")
     tw = time.time()
@@ -241,7 +241,7 @@ def main() -> None:
     async def run_session(request, ws):
         loop = asyncio.get_running_loop()
         voice = request.query.get("voice") or args.voice
-        if voice not in FEMALE_VOICES:
+        if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
         system = system_prompt(persona)
@@ -405,7 +405,7 @@ def main() -> None:
                 if "chunk1" not in marks:
                     marks["chunk1"] = time.monotonic()
                 t_tts = time.monotonic()
-                for res in tts.generate(chunk, voice=voice):
+                for res in tts.generate(chunk, voice=voice, lang_code=voice[0]):
                     if cancelled():
                         return False
                     pcm = np.array(res.audio).reshape(-1)
@@ -699,14 +699,49 @@ def main() -> None:
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    previews: dict[str, bytes] = {}
+
+    async def handle_preview(request):
+        """A short sample of a voice as WAV, for the picker's play buttons."""
+        import io
+        import wave as wavemod
+
+        v = request.query.get("voice", "")
+        if v not in VOICES:
+            return web.Response(status=404)
+        if v not in previews:
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+
+            def job():
+                try:
+                    pcm = np.concatenate([np.array(r.audio).reshape(-1)
+                                          for r in tts.generate(PREVIEW_TEXT, voice=v, lang_code=v[0])])
+                    loop.call_soon_threadsafe(fut.set_result, pcm)
+                except Exception as exc:  # pragma: no cover
+                    loop.call_soon_threadsafe(fut.set_exception, exc)
+
+            gpu_jobs.put(job)
+            pcm = await fut
+            buf = io.BytesIO()
+            with wavemod.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(TTS_RATE)
+                w.writeframes((np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes())
+            previews[v] = buf.getvalue()
+        return web.Response(body=previews[v], content_type="audio/wav",
+                            headers={"Cache-Control": "no-store"})
+
     async def handle_status(_):
         return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria",
-                                  "voices": FEMALE_VOICES})
+                                  "voices": VOICES})
 
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/api/chat", handle_chat)
     app.router.add_get("/api/status", handle_status)
+    app.router.add_get("/api/preview", handle_preview)
     app.router.add_static("/static/", path=str(ui_dir), name="static")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
