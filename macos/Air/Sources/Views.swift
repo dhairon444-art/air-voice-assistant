@@ -58,6 +58,7 @@ struct ContentView: View {
                             .labelStyle(.titleAndIcon)
                             .font(.callout.weight(.medium))
                             .accessibilityLabel("Conversation is live")
+                            .fixedSize()
                     }
                     if ui.tab == .talk {
                         Toggle(isOn: $prefs.showThinking) { Image(systemName: "sidebar.right") }
