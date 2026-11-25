@@ -92,6 +92,20 @@ TOOLS = [
          "content": {"type": "string", "description": "optional text to save instead of the last extraction"}},
         ["format"]),
 ]
+TOOLS += [
+    _fn("look_at_screen", "Look at the user's screen (or just the front window) and answer a question about it. "
+        "Only when the user asks you to look.",
+        {"question": S, "scope": {"type": "string", "enum": ["screen", "window"]},
+         "save": {"type": "boolean", "description": "true only if the user asked to save the screenshot"}},
+        ["question"]),
+    _fn("look_at_image", "Look at an image the user points to: the one they copied (clipboard), the file selected "
+        "in Finder, or a file path, and answer a question about it.",
+        {"question": S, "source": {"type": "string", "enum": ["clipboard", "finder", "file"]}, "path": S},
+        ["question", "source"]),
+]
+VISION_TOOLS = {"look_at_screen", "look_at_image"}
+TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
 WEB_TOOLS = {"web_search", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
              "get_video_transcript", "transcribe_video_audio", "save_as"}
 
@@ -106,6 +120,8 @@ NEEDS_CONFIRMATION = {
 }
 
 ON_HOLD = {
+    "look_at_screen": "Looking at your screen.",
+    "look_at_image": "Let me look at that image.",
     "web_search": "Let me check that.",
     "read_page": "Let me read it.",
     "extract_page": "Let me pull that out.",
@@ -131,6 +147,8 @@ TOOL_GUIDE = (
     "permission yourself first. After a tool runs, tell the user the result briefly and naturally. "
     "Resolve relative dates like tomorrow or next Friday yourself, using the current date and time "
     "given below; call get_date_time when you need the current time. "
+    "Vision: you can look at the user's screen or an image with look_at_screen or look_at_image, "
+    "but only when they ask you to look; never on your own. "
     "Web: you can search, open, read and extract public pages and video transcripts, and save results as "
     "Excel, Word, CSV or a note in the vault. You cannot click, fill in forms, log in, buy, post or "
     "download files; say so if asked. When you use web results, say briefly what the answer is based on. "

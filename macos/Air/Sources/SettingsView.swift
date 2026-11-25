@@ -220,6 +220,7 @@ struct PrivacySettings: View {
                 Label("Conversations are saved only to your Air vault in Obsidian.", systemImage: "doc.text")
                 Label("Online fact-check sends only search words or a link.", systemImage: "globe")
             }
+            VisionPrivacySection()
             Section("Permissions") {
                 PermissionRow(title: "Microphone", status: Self.av(AVCaptureDevice.authorizationStatus(for: .audio)),
                               pane: "Privacy_Microphone") {
@@ -233,6 +234,8 @@ struct PrivacySettings: View {
                               pane: "Privacy_Reminders") {
                     Task { _ = try? await EKEventStore().requestFullAccessToReminders(); tick += 1 }
                 }
+                PermissionRow(title: "Screen Recording", status: CGPreflightScreenCaptureAccess() ? .allowed : .onFirstUse,
+                              pane: "Privacy_ScreenCapture", request: nil)
                 PermissionRow(title: "Automation (Music, Mail, Messages)", status: .onFirstUse, pane: "Privacy_Automation", request: nil)
             }
             .id(tick)
@@ -248,6 +251,28 @@ extension PrivacySettings {
     }
     static func ek(_ s: EKAuthorizationStatus) -> PermissionStatus {
         s == .fullAccess ? .allowed : (s == .notDetermined ? .notYet : .denied)
+    }
+}
+
+struct VisionPrivacySection: View {
+    @AppStorage("airVisionEnabled") private var enabled = true
+    @AppStorage("airVisionExcludeMessages") private var excludeMessages = true
+    @AppStorage("airVisionExcluded") private var excluded = ScreenLook.defaultExcluded.joined(separator: ", ")
+    var body: some View {
+        Section {
+            Toggle("Let Aria look at the screen or an image when I ask", isOn: $enabled)
+            Toggle("Never look at Messages", isOn: $excludeMessages).disabled(!enabled)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Never look at these apps")
+                TextField("App names, separated by commas", text: $excluded, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...4)
+            }
+            .disabled(!enabled)
+        } header: {
+            Text("Screen and images")
+        } footer: {
+            Text("Only on request, never in the background. A red \"Looking at your screen\" badge shows while Aria captures. Excluded apps are refused, or hidden from full-screen captures. Images are read by the local Qwen3.5 9B model (loaded only for these questions), never sent online, and deleted right after unless you say \"save this screenshot\". The note records only which app and window were looked at. Password fields show as dots on screen, so their contents are never captured.")
+        }
     }
 }
 

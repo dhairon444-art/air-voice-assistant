@@ -33,6 +33,11 @@ final class ToolRunner {
     func run(name: String, args: [String: Any]) async -> Result {
         do {
             switch name {
+            // vision (capture only; the local model reads the file)
+            case "capture_screen": return await ScreenLook.capture(scope: args["scope"] as? String ?? "screen")
+            case "get_image": return await ScreenLook.image(source: args["source"] as? String ?? "clipboard",
+                                                            path: args["path"] as? String ?? "")
+            case "discard_capture": return ScreenLook.discard(path: args["path"] as? String ?? "", save: args["save"] as? Bool ?? false)
             // apps
             case "list_running_apps": return listApps()
             case "open_app": return try openApp(str(args, "name"))

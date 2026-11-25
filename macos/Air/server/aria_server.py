@@ -41,7 +41,8 @@ from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch
 from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
                     transcript_of)
 from web_tools import Connectivity, WebSession
-from aria_tools import (WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from vision import Vision
+from aria_tools import (VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -206,6 +207,7 @@ def main() -> None:
 
     memory = Memory(vault)
     net = Connectivity()
+    vision = None  # created after the GPU worker exists
 
     def transcribe_file(wav_path: str) -> list:
         """Local Parakeet transcription of a temporary audio file (runs on the GPU thread)."""
@@ -262,7 +264,7 @@ def main() -> None:
     # One thread owns all GPU (MLX) work; VAD runs on the CPU stream next to it.
     gpu_jobs: queue.Queue = queue.Queue()
 
-    def gpu_worker():
+    def gpu_worker_main():
         # MLX streams are per thread: this thread gets its own GPU stream.
         with mx.stream(mx.new_stream(mx.gpu)):
             while True:
@@ -272,7 +274,8 @@ def main() -> None:
                 except Exception as exc:  # keep the worker alive
                     emit("ERROR", f"model job failed: {exc!r}")
 
-    threading.Thread(target=gpu_worker, name="air-gpu", daemon=True).start()
+    threading.Thread(target=gpu_worker_main, name="air-gpu", daemon=True).start()
+    vision = Vision(emit, gpu_jobs)
 
     async def handle_chat(request: web.Request):
         ws = web.WebSocketResponse(max_msg_size=0)
@@ -428,7 +431,9 @@ def main() -> None:
             set_state("checking" if name in ("web_search", "read_page", "extract_page", "web_search_and_open",
                                              "get_video_transcript", "transcribe_video_audio") else "working")
             event(t="tool", phase="start", name=name)
-            if name in WEB_TOOLS:
+            if name in VISION_TOOLS:
+                result = look(name, clean)
+            elif name in WEB_TOOLS:
                 try:
                     if name == "save_as":
                         result = web.save_as(clean.get("format", ""), clean.get("title"), clean.get("content"))
@@ -448,6 +453,8 @@ def main() -> None:
                 if isinstance(item, dict) and item.get("id"):
                     st["labels"][item["id"]] = item.get("title", "")
             summary = result.get("summary") or result.get("error") or json.dumps(result)[:200]
+            if name in VISION_TOOLS and result.get("ok"):
+                summary = f"looked at {'screen' if name == 'look_at_screen' else 'image'} ({result.get('looked_at', '')})"
             recorder.tool_log.append({"time": t, "tool": name, "args": clean, "confirm": confirm,
                                       "result": ("ok: " if result.get("ok") else "failed: ") + str(summary)})
             emit("TOOLCALL", f"{name} {json.dumps(clean)} -> {str(summary)[:200]}")
@@ -479,6 +486,33 @@ def main() -> None:
                 return ("(Online: for factual claims such as facts, figures, dates, people or recent events, "
                         "call web_search first, then say briefly what the answer is based on.)")
             return "(Online lookups are turned off; use web tools only if the user explicitly asks.)"
+
+        def look(name: str, a: dict) -> dict:
+            """Capture (app) -> describe (Qwen3.5-9B, loaded on demand) -> discard (app)."""
+            if name == "look_at_screen":
+                cap = call_app_tool("capture_screen", {"scope": a.get("scope") or "screen"}, timeout=30)
+            else:
+                path = str(a.get("path") or "").strip()
+                source = "file" if path else (a.get("source") if a.get("source") in ("clipboard", "finder") else "clipboard")
+                cap = call_app_tool("get_image", {"source": source, "path": path}, timeout=30)
+            if not cap.get("ok"):
+                return cap
+            event(t="looking", app=cap.get("app", ""), window=cap.get("window", ""))
+            where = " - ".join(x for x in (cap.get("app"), cap.get("window")) if x)
+            try:
+                res = vision.describe(cap["path"], str(a.get("question", "")),
+                                      context=f"Front app and window: {where}" if where else "", ocr=cap.get("ocr", ""))
+            except Exception as exc:
+                res = {"ok": False, "error": f"I couldn't analyse the image: {exc}"}
+            finally:
+                kept = call_app_tool("discard_capture", {"path": cap["path"], "save": bool(a.get("save"))}, timeout=10)
+            emit("VISION", f"{name} ({where or cap.get('source', '')}): {res.get('seconds')}s, load {res.get('load_s')}s, "
+                           f"peak {res.get('peak_gb')}GB")
+            res["looked_at"] = where or cap.get("source", "image")
+            if kept.get("saved"):
+                res["saved_screenshot"] = kept["saved"]
+                event(t="file", path=kept["saved"])
+            return res
 
         def with_recall(text_: str) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to

@@ -87,6 +87,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var activeTool: String?
     @Published private(set) var previewing: String?
     @Published private(set) var online = true
+    /// Set while Aria is capturing or reading the screen (visible indicator).
+    @Published private(set) var looking: String?
     private var loadedPort: Int?
     private var statusTimer: Timer?
     private var ariaOpen = false
@@ -296,6 +298,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         switch e["t"] as? String {
         case "tool":
             activeTool = (e["phase"] as? String) == "start" ? e["name"] as? String : nil
+            if let n = e["name"] as? String, n == "look_at_screen" || n == "look_at_image" {
+                looking = (e["phase"] as? String) == "start" ? (n == "look_at_screen" ? "your screen" : "the image") : nil
+            }
+        case "looking":
+            if let app = e["app"] as? String, !app.isEmpty, looking == "your screen" { looking = "your screen (\(app))" }
         case "confirm":
             confirm = ConfirmCard(tool: e["tool"] as? String ?? "", text: e["text"] as? String ?? "")
         case "confirm_done":

@@ -217,6 +217,15 @@ struct StateHero: View {
             OrbView(state: web.state, mic: web.micLevel, out: web.outLevel)
                 .frame(width: 150, height: 150)
                 .accessibilityHidden(true)
+            if let what = web.looking {
+                Label("Looking at \(what)", systemImage: "eye.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Color.red.gradient, in: Capsule())
+                    .accessibilityLabel("Aria is looking at \(what)")
+                    .transition(.scale.combined(with: .opacity))
+            }
             VStack(spacing: 4) {
                 Label(web.state.title, systemImage: web.state.symbol)
                     .font(.title2.weight(.semibold))
