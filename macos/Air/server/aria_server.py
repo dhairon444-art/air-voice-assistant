@@ -84,8 +84,14 @@ def to_ascii_quotes(s: str) -> str:
              .replace("”", '"'))
 
 
+THINK_OPEN = ("<think>", "<|channel>thought")
+THINK_CLOSE = ("</think>", "<channel|>")
+
+
 def clean_for_speech(s: str) -> str:
     s = re.sub(r"<think>.*?</think>", "", s, flags=re.S)
+    s = re.sub(r"<\|channel>.*?<channel\|>", "", s, flags=re.S)
+    s = re.sub(r"<\|?[a-z_\"]+\|?>", " ", s)  # any leftover special-token text such as <turn|>
     s = re.sub(r"[*_#`>|]+", "", s)
     s = re.sub(r"^\s*[-•]\s+", "", s, flags=re.M)
     s = re.sub(r"\s+", " ", s)
@@ -189,8 +195,10 @@ def main() -> None:
     emit("MEMORY", f"active={mx.get_active_memory() / 1e9:.2f}GB peak={mx.get_peak_memory() / 1e9:.2f}GB")
 
     model_ids = f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
-    # Hybrid reasoning models (Qwen3 8B/14B/30B) accept enable_thinking; the 2507 Instruct models don't think.
-    can_think = "<think>" in (getattr(tokenizer, "chat_template", "") or "") and "Instruct-2507" not in args.llm
+    # Hybrid reasoning models (Qwen3 8B/14B/30B, Gemma 4) accept enable_thinking; the 2507 Instruct models don't.
+    _tpl = getattr(tokenizer, "chat_template", "") or ""
+    can_think = ("<think>" in _tpl or "enable_thinking" in _tpl) and "Instruct-2507" not in args.llm
+    TOOL_START = getattr(tokenizer, "tool_call_start", None) or "<tool_call>"
 
     memory = Memory(vault)
     net = Connectivity()
@@ -548,34 +556,36 @@ def main() -> None:
                         if in_tool:
                             continue
                         piece = resp.text
-                        if in_think and "</think>" not in piece:
+                        if in_think and not any(c in piece for c in THINK_CLOSE):
                             think_tokens += 1
                             if think_tokens >= args.think_budget:
                                 # Thinking budget used up: close the reasoning and make it answer.
-                                close = "\n\nThat's enough thinking; answer now.\n</think>\n\n"
+                                close = ("\n\nThat's enough thinking; answer now.\n"
+                                         + ("<channel|>" if "<|channel>" in full else "</think>\n\n"))
                                 full += close
                                 marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
                                 in_think = False
                                 segments.append(tokenizer.encode(close, add_special_tokens=False))
                                 break
-                        if "<think>" in piece:
+                        if any(o in piece for o in THINK_OPEN) or (piece.strip() == "thought" and full.endswith("<|channel>thought")):
                             in_think = True
                             marks.setdefault("think_start", time.monotonic())
                         if in_think and live and not spoken and not marks.get("filler") and \
                                 time.monotonic() - marks.get("think_start", time.monotonic()) > 1.2:
                             marks["filler"] = True
                             speak("Let me think.")
-                        if in_think and "</think>" in piece:
+                        if in_think and any(c in piece for c in THINK_CLOSE):
                             marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
                         if in_think:
-                            if "</think>" in piece:
+                            closer = next((c for c in THINK_CLOSE if c in piece), None)
+                            if closer:
                                 in_think = False
-                                piece = piece.split("</think>", 1)[1]
+                                piece = piece.split(closer, 1)[1]
                             else:
                                 continue
                         buf += piece
-                        if "<tool_call>" in buf:
-                            buf, _ = buf.split("<tool_call>", 1)
+                        if TOOL_START in buf:
+                            buf, _ = buf.split(TOOL_START, 1)
                             in_tool = True
                         if not live:
                             continue
@@ -607,8 +617,8 @@ def main() -> None:
                     st["cache"] = shared["cache"] = make_prompt_cache(lm)
                 shared["tokens"] = st["cache_tokens"]
                 calls = parse_tool_calls(full)
-                text = re.sub(r"<think>.*?</think>", "", full, flags=re.S)
-                text = text.split("<tool_call>", 1)[0].strip()
+                text = re.sub(r"<think>.*?</think>|<\|channel>.*?<channel\|>", "", full, flags=re.S)
+                text = re.sub(r"<\|?[a-z_\"]+\|?>", "", text.split(TOOL_START, 1)[0]).strip()
                 return text, calls
 
             def tool_message(payload: dict) -> dict:

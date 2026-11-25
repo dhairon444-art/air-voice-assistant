@@ -95,12 +95,16 @@ Aria can act on the Mac using the language model's tool calling. The app runs th
 | Music | now playing, play, pause, next, previous | |
 | Shortcuts | list | run a shortcut |
 | Mail / Messages | unread mail count and senders (Mail must be open) | send email, send message |
+| Web (only the query or link leaves the Mac) | search and fact-check (DuckDuckGo, Wikipedia), open a link or a numbered source, read a page, extract tables, links, prices and dates, get a video transcript from its captions | transcribe a video without captions here (temporary audio, deleted afterwards) |
+| Exports | save the last transcript or extraction as Excel, Word, CSV or a vault note in `~/Documents/Air Exports` (never overwrites) | |
 
 - For anything that needs a "yes", Aria reads back exactly what she will do. Only a clear yes runs it; "no" or anything else cancels it.
 - Every tool call (time, tool, arguments, confirmation, result) is logged in the session's Obsidian note.
 - macOS asks for Calendar, Reminders or Automation access the first time a tool needs it. Aria says so and asks you to try again.
 - Not available: brightness, Focus or Do Not Disturb (you can use a Shortcut for these), and unread iMessages, which macOS doesn't expose without Full Disk Access.
-- If Aria says she did something without calling a tool, she is asked once to make the call. If she still doesn't, she says she hasn't done it.
+- Before each sentence is spoken, it is checked for a claim of an action that no tool performed. If it contains one, Aria stops, is asked once to make the call, and otherwise says she hasn't done it.
+- Online fact-check is on by default (Settings). Connectivity is checked in the background. Offline, or when the 1.5 s search budget runs out, Aria answers from the model and says she couldn't verify. Sources and every URL opened or read are listed in the session note.
+- Think first (Settings; brains that can reason, not Fast) reasons silently before answering, with a 256-token budget.
 
 Build and install (needs Xcode):
 
@@ -112,7 +116,7 @@ cd macos/Air
 
 Python environments:
 
-- `AIR_ARIA_PYTHON` defaults to `~/Library/Application Support/Air/venv-smart/bin/python`. This venv has `mlx-audio`, `mlx-lm`, `misaki`, `spacy` with `en_core_web_sm`, `num2words`, `phonemizer-fork`, `espeakng-loader`, `scipy` and `aiohttp`. Install `misaki` without its `[en]` extra to avoid pulling in torch.
+- `AIR_ARIA_PYTHON` defaults to `~/Library/Application Support/Air/venv-smart/bin/python`. This venv has `mlx-audio`, `mlx-lm`, `misaki`, `spacy` with `en_core_web_sm`, `num2words`, `phonemizer-fork`, `espeakng-loader`, `scipy`, `aiohttp`, `trafilatura`, `youtube-transcript-api`, `yt-dlp`, `openpyxl` and `python-docx`. ffmpeg (Homebrew) is only needed to transcribe videos that have no captions. Install `misaki` without its `[en]` extra to avoid pulling in torch.
 
 Aria's models are `mlx-community/Qwen3-4B-Instruct-2507-4bit`, `mlx-community/parakeet-tdt-0.6b-v2` and `mlx-community/Kokoro-82M-bf16`. Download them once with `huggingface_hub.snapshot_download`. The server log is written to `~/Library/Logs/Air/server.log`.
 

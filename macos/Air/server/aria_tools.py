@@ -200,10 +200,23 @@ def describe(name: str, a: dict) -> str:
 
 
 def parse_tool_calls(text: str) -> list[dict]:
-    """Find <tool_call>{json}</tool_call> blocks. The closing tag is a special token that the
-    detokenizer may drop, so decode the JSON object right after each opening tag instead."""
+    """Find tool calls in Qwen form (<tool_call>{json}</tool_call>) or Gemma 4 form
+    (<|tool_call>call:name{key:<|"|>value<|"|>}<tool_call|>)."""
     import json
 
+    if "<|tool_call>" in text or "call:" in text:
+        try:
+            from mlx_lm.tool_parsers import gemma4
+
+            # Tolerate common slips: call:name(...) instead of call:name{...}, doubled string delimiters.
+            fixed = re.sub(r"call:([\w-]+)\((.*?)\)(?=\s*(<tool_call\|>|$))", r"call:\1{\2}", text, flags=re.S)
+            fixed = fixed.replace('<|"|><|"|>', '<|"|>')
+            fixed = re.sub(r",\s+(\w+):", r",\1:", fixed)
+            r = gemma4.parse_tool_call(fixed)
+            r = r if isinstance(r, list) else [r]
+            return [{"name": c["name"], "arguments": c.get("arguments") or {}} for c in r]
+        except Exception:
+            pass
     calls = []
     dec = json.JSONDecoder()
     for m in re.finditer(r"<tool_call>", text):
