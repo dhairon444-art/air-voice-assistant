@@ -703,6 +703,7 @@ def main() -> None:
         RESEARCH_ASK = re.compile(r"^\W*(please\s+)?(can you\s+|could you\s+)?(do (a |some )?(deep |quick )?research|research|"
                                   r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
 
+        QUIZ_ASK = re.compile(r"\b(quiz|test me|multiple choice)\b", re.I)
         SWITCH_ASK = re.compile(r"\b(switch|change|swap)\s+(to|into|personality|your personality)\b|\bbe (the|my) \w+ (now|instead)\b", re.I)
         BROWSER_ASK = re.compile(r"\b(my )?(browser|tabs?|safari|chrome|tabbit|arc)\b", re.I)
         NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
@@ -755,6 +756,9 @@ def main() -> None:
             if args.tools and SWITCH_ASK.search(text_):
                 hint = ("(The user wants a different personality: call switch_personality with the name they said.) "
                         + hint).strip()
+            if args.tools and QUIZ_ASK.search(text_):
+                hint = ("(For a quiz: ask one question at a time with ask_choice, quiz true, with the correct option and a "
+                        "one-line explanation. Don't say the answer first.) " + hint).strip()
             if args.tools and OWN_DOC.search(text_):
                 hint = ("(This is about the user's own document on this Mac: find it with find_files and read it "
                         "with read_file, then answer.) " + hint).strip()
@@ -1153,6 +1157,9 @@ def main() -> None:
                             say(spoken_choice(q, opts))
                             emit("TOOLCALL", f"ask_choice {json.dumps(targs)[:200]} awaiting an answer")
                             break
+                        # Not enough options: tell the model, never forward it to the app.
+                        messages.append(tool_message({"ok": False, "error": "ask_choice needs a question and 2 to 6 options."}))
+                        continue
                     if name in NEEDS_CONFIRMATION:
                         for key in ("event_id", "reminder_id"):
                             if targs.get(key) in st["labels"]:

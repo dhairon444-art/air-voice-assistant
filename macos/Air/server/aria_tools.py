@@ -4,6 +4,7 @@ Aria says before running one of those."""
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 
@@ -350,46 +351,103 @@ _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment
 
 
 _TOOL_RE = None
+_CALL_START = None
 
 
 def _tool_regex():
-    global _TOOL_RE
+    global _TOOL_RE, _CALL_START
     if _TOOL_RE is None:
         names = sorted(TOOL_NAMES, key=len, reverse=True)
         alts = "|".join(re.escape(n) + "|" + re.escape(n.replace("_", "")) for n in names)
-        _TOOL_RE = re.compile(rf"\b({alts})\b\s*(\(([^()]*)\)|((?:\s*\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,)]+),?)+))")
+        _TOOL_RE = re.compile(rf"\b({alts})\b\s*(\(([^()]*)\)|((?:\s*\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,)]+),?)+))", re.I)
+        _CALL_START = re.compile(rf"\b({alts})\s*\(", re.I)
     return _TOOL_RE
+
+
+def _balanced(text: str, start: int) -> str | None:
+    """The text inside the parenthesis that opens at text[start], respecting quotes and brackets."""
+    depth, quote, i = 0, None, start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i]
+        i += 1
+    return None
+
+
+def _parse_args(argstr: str) -> dict:
+    """key=value, key: value, or JSON-ish arguments, including lists like options: ["a", "b"]."""
+    a = argstr.strip()
+    if not a:
+        return {}
+    for candidate in (a, "{" + a + "}"):
+        try:
+            v = json.loads(candidate)
+            if isinstance(v, dict):
+                return v
+        except ValueError:
+            pass
+    # key: value / key=value -> JSON: quote bare keys outside strings, Python literals to JSON
+    js = re.sub(r'(^|[,{\s])([A-Za-z_]\w*)\s*[:=]\s*', lambda m: f'{m.group(1)}"{m.group(2)}": ', a)
+    js = re.sub(r"\bTrue\b", "true", re.sub(r"\bFalse\b", "false", js))
+    try:
+        v = json.loads("{" + js + "}")
+        if isinstance(v, dict):
+            return v
+    except ValueError:
+        pass
+    out = {}
+    for k, v in re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s,)]+)", a):
+        v = v.strip("\"'")
+        if v.lower() in ("true", "false"):
+            v = v.lower() == "true"
+        else:
+            try:
+                v = int(v) if re.fullmatch(r"-?\d+", v) else float(v) if re.fullmatch(r"-?\d+\.\d+", v) else v
+            except ValueError:
+                pass
+        out[k] = v
+    return out
 
 
 def parse_loose_calls(text: str) -> list[dict]:
     """Small models sometimes write a call as code or plain text instead of <tool_call> JSON,
-    e.g. add_reminder(title="Call Mum", due="...") or 'addreminder title="Call Mum"'.
-    Recognise those for known tools so the call still goes through the normal path."""
+    e.g. add_reminder(title="Call Mum"), Askchoice( question: "...", options: [...] ) or
+    'addreminder title="Call Mum"'. Recognise those for known tools (any case, with or without
+    underscores) so the call still goes through the normal path."""
+    _tool_regex()
     out = []
-    by_flat = {n.replace("_", ""): n for n in TOOL_NAMES}
-    for m in _tool_regex().finditer(text):
-        name = m.group(1)
-        name = name if name in TOOL_NAMES else by_flat.get(name)
-        argstr = m.group(3) if m.group(3) is not None else (m.group(4) or "")
-        args = {}
-        for k, v in re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s,)]+)", argstr):
-            v = v.strip("\"'")
-            if v.lower() in ("true", "false"):
-                v = v.lower() == "true"
-            else:
-                try:
-                    v = int(v) if re.fullmatch(r"-?\d+", v) else float(v) if re.fullmatch(r"-?\d+\.\d+", v) else v
-                except ValueError:
-                    pass
-            args[k] = v
-        if name and (args or m.group(2).startswith("(")):
+    by_flat = {n.replace("_", "").lower(): n for n in TOOL_NAMES}
+    for m in _CALL_START.finditer(text):
+        name = by_flat.get(m.group(1).replace("_", "").lower())
+        inner = _balanced(text, m.end() - 1)
+        if name and inner is not None:
+            out.append({"name": name, "arguments": _parse_args(inner)})
+    if out:
+        return out
+    for m in _TOOL_RE.finditer(text):
+        name = by_flat.get(m.group(1).replace("_", "").lower())
+        args = _parse_args(m.group(4) or "")
+        if name and args:
             out.append({"name": name, "arguments": args})
     return out
 
 
 def looks_like_tool_text(text: str) -> bool:
     """A sentence that is really a tool call written as text (never speak it)."""
-    return bool(_tool_regex().search(text or ""))
+    _tool_regex()
+    return bool(_CALL_START.search(text or "") or _TOOL_RE.search(text or ""))
 
 
 _ACT = (r"(closed|quit|moved|deleted|cancel+ed|added|set|muted|unmuted|sent|created|marked|opened|switched|"
