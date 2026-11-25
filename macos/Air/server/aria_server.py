@@ -17,7 +17,10 @@ WebSocket protocol:
                     0x03 + utf-8                   error
                     0x05 + utf-8                   your transcribed turn
                     0x06                           stop playback now (barge-in)
-                    0x07 + utf-8                   state: listening|hearing|thinking|speaking
+                    0x07 + utf-8                   state: listening|hearing|thinking|checking|working|speaking
+                    0x09 + JSON                    UI event: tool start/end, confirm card, sources, saved file
+  client -> server  text JSON {"type":"confirm","answer":"yes"|"no"}  tapped Confirm / Cancel
+                    text JSON {"type":"say","text":"..."}            a typed turn
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_pro
 from web_tools import Connectivity, WebSession
 from aria_tools import (WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
+                        looks_like_tool_text,
                         ACTION_TOOLS)
 
 def _default_persona() -> str:
@@ -220,10 +224,11 @@ def main() -> None:
                 + f"\n\nToday is {today} (time zone {tz}).")
 
     def build_messages(persona: str) -> list[dict]:
-        """[base + tools] [personality] [memory]: switching personality or updating memory only
-        re-processes the later, smaller blocks."""
-        return [{"role": "system", "content": base_prompt()},
-                {"role": "system", "content": "Your personality and role:\n" + persona},
+        """[personality + base + tools] [memory]. The personality must share the first system message
+        with the tool instructions: as a separate system message the 4B model stops emitting proper
+        tool calls (measured 6/8 vs 8/8). Memory changes only re-process the small second block;
+        a personality change is pre-warmed in the background via /api/prime."""
+        return [{"role": "system", "content": "Your personality and role:\n" + persona + "\n\n" + base_prompt()},
                 {"role": "system", "content": memory.system_block()}]
 
     # One KV cache for the whole process: sessions run one at a time, so each new session only
@@ -286,6 +291,7 @@ def main() -> None:
         if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
+        personality = (request.query.get("personality") or "").strip()[:40]
         # "Think first": let a hybrid model reason before answering (hidden from speech).
         think = request.query.get("think") == "1" and can_think
         web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
@@ -293,6 +299,7 @@ def main() -> None:
         last_persona["text"] = persona
         recorder = SessionRecorder(vault, voice, persona, mode="Aria", model_id=model_ids,
                                    assistant="Aria", user_side=True)
+        recorder.personality = personality
         messages: list[dict] = build_messages(persona)
         st = {
             "gen": 0,                 # bumped to cancel the reply being generated
@@ -311,6 +318,9 @@ def main() -> None:
 
         def send(kind: int, payload: bytes = b"") -> None:
             loop.call_soon_threadsafe(out_q.put_nowait, bytes([kind]) + payload)
+
+        def event(**payload) -> None:
+            send(9, json.dumps(payload, ensure_ascii=False).encode())
 
         def set_state(s: str) -> None:
             send(7, s.encode())
@@ -415,6 +425,9 @@ def main() -> None:
         def run_tool(name: str, targs: dict, confirm: str) -> dict:
             clean = {k: v for k, v in targs.items() if not k.startswith("_")}
             t = time.strftime("%H:%M:%S")
+            set_state("checking" if name in ("web_search", "read_page", "extract_page", "web_search_and_open",
+                                             "get_video_transcript", "transcribe_video_audio") else "working")
+            event(t="tool", phase="start", name=name)
             if name in WEB_TOOLS:
                 try:
                     if name == "save_as":
@@ -438,6 +451,12 @@ def main() -> None:
             recorder.tool_log.append({"time": t, "tool": name, "args": clean, "confirm": confirm,
                                       "result": ("ok: " if result.get("ok") else "failed: ") + str(summary)})
             emit("TOOLCALL", f"{name} {json.dumps(clean)} -> {str(summary)[:200]}")
+            event(t="tool", phase="end", name=name, ok=bool(result.get("ok")), summary=str(summary)[:160])
+            if name in WEB_TOOLS and result.get("ok") and web.last_sources:
+                event(t="sources", items=[{"title": s_["title"], "url": s_["url"]} for s_ in web.last_sources[:6]])
+            if name == "save_as" and result.get("ok") and result.get("path"):
+                event(t="file", path=result["path"])
+            set_state("thinking")
             return result
 
         def transcribe(audio) -> str:
@@ -474,7 +493,7 @@ def main() -> None:
             notes = "\n".join(f"- {h['date']}: {h['summary']}" for h in hits)
             return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})" + (f"\n{hint}" if hint else "")
 
-        def reply(audio, t_end: float, gen_id: int):
+        def reply(audio, t_end: float, gen_id: int, typed: str | None = None):
             def cancelled() -> bool:
                 return gen_id != st["gen"] or st["closed"]
 
@@ -593,6 +612,9 @@ def main() -> None:
                             chunk, buf = pop_sentence(buf, first=not spoken or len(spoken) == marks.get("hold", -1))
                             if chunk is None:
                                 break
+                            if args.tools and looks_like_tool_text(chunk):
+                                live = False  # a tool call written as text: parse it, never speak it
+                                break
                             if check_claims and claims_action(chunk):
                                 # Would claim an action that no tool performed: stop speaking here.
                                 guard["hit"] = True
@@ -605,7 +627,9 @@ def main() -> None:
                     if cancelled():
                         break
                 if live and not cancelled() and buf.strip():
-                    if check_claims and claims_action(buf):
+                    if args.tools and looks_like_tool_text(buf):
+                        pass
+                    elif check_claims and claims_action(buf):
                         guard["hit"] = True
                     else:
                         speak(buf)
@@ -626,7 +650,7 @@ def main() -> None:
 
             try:
                 t_stt = time.monotonic()
-                text = transcribe(audio)
+                text = typed if typed is not None else transcribe(audio)
                 stt_ms = (time.monotonic() - t_stt) * 1000
                 marks["stt_done"] = time.monotonic()
                 if not text or cancelled():
@@ -634,13 +658,14 @@ def main() -> None:
                     set_state("listening")
                     return
                 send(5, text.encode())
-                spoke_at = t_end - audio.shape[0] / STT_RATE - recorder.start_mono
+                spoke_at = (t_end - (audio.shape[0] / STT_RATE if audio is not None else 0)) - recorder.start_mono
                 recorder.add_segment(spoke_at, "You", text)
 
                 pending = st.pop("pending", None)
                 confirmed_ok = False
                 if pending is not None:
                     verdict = classify_reply(text)
+                    event(t="confirm_done", answer=verdict)
                     if verdict == "yes":
                         result = run_tool(pending["name"], pending["args"], f'confirmed ("{text}")')
                         confirmed_ok = bool(result.get("ok"))
@@ -725,6 +750,7 @@ def main() -> None:
                             if targs.get(key) in st["labels"]:
                                 targs["_label"] = st["labels"][targs[key]]
                         st["pending"] = {"name": name, "args": targs}
+                        event(t="confirm", tool=name, text=describe(name, targs).split(" Should I go ahead")[0])
                         say(describe(name, targs))
                         emit("TOOLCALL", f"{name} {json.dumps(call['arguments'])} awaiting confirmation")
                         break
@@ -813,6 +839,18 @@ def main() -> None:
                         mic_q.put("END")
                     elif data.get("type") == "stop_speaking":
                         barge_in()
+                    elif data.get("type") in ("confirm", "say"):
+                        # A tapped Confirm/Cancel or a typed turn: handled like a spoken one, minus STT.
+                        typed = {"yes": "Yes.", "no": "No."}.get(data.get("answer"), "") if data["type"] == "confirm" \
+                            else str(data.get("text", ""))[:2000]
+                        if typed.strip():
+                            if assistant_audible():
+                                barge_in()
+                            gen_id = st["gen"] + 1
+                            st["gen"] = gen_id
+                            st["busy"] = True
+                            set_state("thinking")
+                            gpu_jobs.put(lambda t_=typed, g_=gen_id, e_=time.monotonic(): reply(None, e_, g_, typed=t_))
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                     break
         finally:
@@ -906,14 +944,24 @@ def main() -> None:
         return web.Response(body=previews[v], content_type="audio/wav",
                             headers={"Cache-Control": "no-store"})
 
+    async def handle_prime(request):
+        """Pre-warm the KV cache for a newly picked personality so the next first reply stays fast."""
+        persona = (request.query.get("persona") or "").strip()
+        if persona and not lock.locked():
+            last_persona["text"] = persona
+            gpu_jobs.put(lambda p=persona: prime(build_messages(p)))
+        return web.json_response({"ok": True})
+
     async def handle_status(_):
         return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria", "can_think": can_think,
+                                  "online": net.online,
                                   "voices": VOICES})
 
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/api/chat", handle_chat)
     app.router.add_get("/api/status", handle_status)
+    app.router.add_post("/api/prime", handle_prime)
     app.router.add_get("/api/preview", handle_preview)
     app.router.add_static("/static/", path=str(ui_dir), name="static")
 

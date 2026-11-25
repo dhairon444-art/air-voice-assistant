@@ -1,31 +1,37 @@
 import AVFoundation
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let model = ModelProcess()
     let web = WebController()
     let prefs = Prefs()
+    let ui = UIState()
+    let settingsNav = SettingsNav()
     private var window: NSWindow!
+    private var settingsWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var hotKeyRef: EventHotKeyRef?
+    private var keyMonitor: Any?
     private var signalSources: [DispatchSourceSignal] = []
+    static var shared: AppDelegate!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
         installSignalHandlers()
+        applyAppearanceOverride()
         web.onSessionEnded = { [weak self] in
-            // The server also reports AIR_SESSION_SAVED; this is a fallback refresh.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
         }
+        AppActions.openSettings = { [weak self] tab in self?.showSettings(tab) }
+        AppActions.showOnboarding = { [weak self] in self?.ui.showOnboarding = true; self?.showMain() }
+        prefs.onUIPrefsChanged = { [weak self] in self?.applyQuickAccess() }
 
-        web.onSetting = { [weak self] key, value in
-            guard let self else { return }
-            if key == "voice" { self.prefs.voice = Voices.valid(value) }
-            if key == "personality", value == Personas.customID || Personas.preset(value) != nil {
-                self.prefs.personality = value
-            }
-        }
-        let root = ContentView().environmentObject(model).environmentObject(web).environmentObject(prefs)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),
+        let root = ContentView()
+            .environmentObject(model).environmentObject(web).environmentObject(prefs).environmentObject(ui)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "Air"
@@ -33,21 +39,184 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = NSHostingView(rootView: root)
         window.setFrameAutosaveName("AirMain")
         if !window.setFrameUsingName("AirMain") { window.center() }
+        window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        model.start(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
+        installKeyMonitor()
+        applyQuickAccess()
 
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        let args = UserDefaults.standard
+        if let demo = args.string(forKey: "AirDemo") {
+            web.loadDemo(demo)
+            model.showDemoReady()
+        } else {
+            model.start(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
+        }
+        if let tab = args.string(forKey: "AirSettings"), let t = SettingsTab(rawValue: tab) { showSettings(t) }
+        if !args.bool(forKey: "airOnboarded") || args.bool(forKey: "AirShowOnboarding") {
+            ui.showOnboarding = true
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { statusItem == nil }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMain()
+        return true
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         web.webView.evaluateJavaScript("window.airStop && window.airStop()")
         model.stop()
+    }
+
+    // MARK: windows
+
+    func showMain() {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showSettings(_ tab: SettingsTab) {
+        settingsNav.tab = tab
+        if settingsWindow == nil {
+            let view = SettingsView()
+                .environmentObject(settingsNav).environmentObject(prefs).environmentObject(model).environmentObject(web)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+            w.title = "Settings"
+            w.toolbarStyle = .unified
+            w.contentView = NSHostingView(rootView: view)
+            w.isReleasedWhenClosed = false
+            w.setFrameAutosaveName("AirSettings")
+            if !w.setFrameUsingName("AirSettings") { w.center() }
+            settingsWindow = w
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func openSettingsMenu() { showSettings(settingsNav.tab) }
+    @objc func showTalk() { ui.tab = .talk; showMain() }
+    @objc func showHistory() { ui.tab = .history; showMain() }
+    @objc func toggleTalking() { ui.tab = .talk; showMain(); web.toggle() }
+    @objc func doneTalking() { web.endTurn() }
+    @objc func interruptAria() { web.interrupt() }
+    @objc func confirmAction() { if web.confirm != nil { web.answer(true) } }
+    @objc func cancelAction() { if web.confirm != nil { web.answer(false) } }
+    @objc func showWelcome() { AppActions.showOnboarding() }
+    @objc func pickPersonality(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { prefs.personality = id } }
+    @objc func pickVoice(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { prefs.voice = id } }
+
+    // MARK: keyboard on the Talk screen: Space, Esc, Return
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, e.window === self.window, self.ui.tab == .talk, !self.ui.showOnboarding,
+                  e.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return e }
+            if e.window?.firstResponder is NSText { return e }  // typing in a text field
+            switch Int(e.keyCode) {
+            case kVK_Space:
+                if self.web.confirm != nil { return e }
+                self.web.primaryAction(); return nil
+            case kVK_Escape:
+                if self.web.confirm != nil { self.web.answer(false); return nil }
+                if self.web.state == .speaking { self.web.interrupt(); return nil }
+                if self.web.live { self.web.stop(); return nil }
+                return e
+            case kVK_Return:
+                if self.web.confirm != nil { self.web.answer(true); return nil }
+                return e
+            default:
+                return e
+            }
+        }
+    }
+
+    // MARK: global hotkey and menu bar icon
+
+    private func applyQuickAccess() {
+        if prefs.globalHotkey { registerHotKey() } else { unregisterHotKey() }
+        if prefs.menuBarIcon { installStatusItem() } else if let s = statusItem {
+            NSStatusBar.system.removeStatusItem(s); statusItem = nil
+        }
+    }
+
+    private func registerHotKey() {
+        guard hotKeyRef == nil else { return }
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+            Task { @MainActor in AppDelegate.shared?.hotKeyPressed() }
+            return noErr
+        }, 1, &spec, nil, nil)
+        let id = EventHotKeyID(signature: OSType(0x41495231), id: 1)  // 'AIR1'
+        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    private func unregisterHotKey() {
+        if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
+    }
+
+    /// ⌃⌥Space from anywhere: bring Air forward and start talking (or end the conversation).
+    func hotKeyPressed() {
+        ui.tab = .talk
+        showMain()
+        web.toggle()
+    }
+
+    private func installStatusItem() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Air")
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        statusItem = item
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        menu.removeAllItems()
+        menu.addItem(withTitle: web.live ? "End Conversation" : "Start Talking", action: #selector(toggleTalking), keyEquivalent: "")
+            .target = self
+        menu.addItem(.separator())
+        let pItem = NSMenuItem(title: "Personality", action: nil, keyEquivalent: "")
+        let pMenu = NSMenu()
+        for p in Personas.presets + [Personality(id: Personas.customID, name: "Custom", summary: "", text: "")] {
+            let it = NSMenuItem(title: p.name, action: #selector(pickPersonality(_:)), keyEquivalent: "")
+            it.representedObject = p.id; it.target = self; it.state = prefs.personality == p.id ? .on : .off
+            pMenu.addItem(it)
+        }
+        pItem.submenu = pMenu
+        menu.addItem(pItem)
+        let vItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
+        let vMenu = NSMenu()
+        for v in Voices.all {
+            let it = NSMenuItem(title: "\(v.name) – \(v.note)", action: #selector(pickVoice(_:)), keyEquivalent: "")
+            it.representedObject = v.id; it.target = self; it.state = prefs.voice == v.id ? .on : .off
+            vMenu.addItem(it)
+        }
+        vItem.submenu = vMenu
+        menu.addItem(vItem)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Open Air", action: #selector(showTalk), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "History", action: #selector(showHistory), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettingsMenu), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Air", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    }
+
+    // MARK: misc
+
+    /// -AirAppearance light|dark (for screenshots); otherwise follow the system.
+    private func applyAppearanceOverride() {
+        switch UserDefaults.standard.string(forKey: "AirAppearance") {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
     }
 
     /// `kill <pid>` / logout: stop the child before exiting.
@@ -69,24 +238,32 @@ struct AirMain {
         let delegate = AppDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.regular)
-        app.mainMenu = buildMenu()
+        app.mainMenu = buildMenu(delegate)
         withExtendedLifetime(delegate) { app.run() }
     }
 
-    @MainActor static func buildMenu() -> NSMenu {
+    @MainActor static func buildMenu(_ d: AppDelegate) -> NSMenu {
         let main = NSMenu()
-        let appItem = NSMenuItem()
-        main.addItem(appItem)
+        func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags = .command,
+                  target: AnyObject? = nil) -> NSMenuItem {
+            let it = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            it.keyEquivalentModifierMask = mods
+            it.target = target
+            return it
+        }
+        let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Air", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(item("Welcome to Air…", #selector(AppDelegate.showWelcome), "", target: d))
+        appMenu.addItem(.separator())
+        appMenu.addItem(item("Settings…", #selector(AppDelegate.openSettingsMenu), ",", target: d))
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Air", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Air", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
 
-        let editItem = NSMenuItem()
-        main.addItem(editItem)
+        let editItem = NSMenuItem(); main.addItem(editItem)
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -97,8 +274,23 @@ struct AirMain {
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
 
-        let winItem = NSMenuItem()
-        main.addItem(winItem)
+        let talkItem = NSMenuItem(); main.addItem(talkItem)
+        let talk = NSMenu(title: "Conversation")
+        talk.addItem(item("Start or End Conversation", #selector(AppDelegate.toggleTalking), "t", target: d))
+        talk.addItem(item("Done Talking", #selector(AppDelegate.doneTalking), "d", target: d))
+        talk.addItem(item("Interrupt Aria", #selector(AppDelegate.interruptAria), ".", target: d))
+        talk.addItem(.separator())
+        talk.addItem(item("Confirm Action", #selector(AppDelegate.confirmAction), "\r", target: d))
+        talk.addItem(item("Cancel Action", #selector(AppDelegate.cancelAction), "\u{8}", target: d))
+        talkItem.submenu = talk
+
+        let viewItem = NSMenuItem(); main.addItem(viewItem)
+        let view = NSMenu(title: "View")
+        view.addItem(item("Talk", #selector(AppDelegate.showTalk), "1", target: d))
+        view.addItem(item("History", #selector(AppDelegate.showHistory), "2", target: d))
+        viewItem.submenu = view
+
+        let winItem = NSMenuItem(); main.addItem(winItem)
         let win = NSMenu(title: "Window")
         win.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         win.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")

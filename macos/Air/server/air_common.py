@@ -244,6 +244,7 @@ class SessionRecorder:
         self.segments: list[list] = []  # [offset_seconds, speaker, text]
         self.tool_log: list[dict] = []   # every tool call: time, tool, args, confirmation, result
         self.web_log: list[dict] = []    # every URL searched, opened, read or saved
+        self.personality = ""
         self.last_mono: dict[str, float] = {}
         self.lock = threading.Lock()
         self.finished = False
@@ -302,6 +303,7 @@ class SessionRecorder:
             f"mode: {self.mode}",
             f"model: {self.model_id}",
             f"voice: {self.voice}",
+            *([f"personality: {self.personality}"] if self.personality else []),
             f"persona: {json.dumps(self.persona, ensure_ascii=False)}",
             f"status: {'complete' if final else 'in-progress'}",
             f"tags: [air, session, {tag}]",

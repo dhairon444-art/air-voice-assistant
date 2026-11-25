@@ -2,276 +2,76 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Air</title>
-<style>
-  :root {
-    --bg: #f6f7fb; --panel: #ffffff; --text: #132034; --muted: #5b6475;
-    --accent: #7c5cff; --accent2: #38bdf8; --live: #fb7185; --border: #e3e6ee;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #14161c; --panel: #1d2029; --text: #eef0f6; --muted: #9aa3b5; --border: #2c303c; }
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
-  body { display: flex; flex-direction: column; }
-  .hint { margin: 12px 16px 0; padding: 8px 12px; border-radius: 10px; font-size: 12.5px;
-    background: color-mix(in srgb, var(--accent2) 14%, transparent); color: var(--text); }
-  .hint b { font-weight: 600; }
-  main { flex: 1; display: grid; grid-template-rows: auto 1fr; min-height: 0; }
-  .stage { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 16px 16px; }
-  .orb { position: relative; width: 150px; height: 150px; border-radius: 50%; border: 0; cursor: pointer;
-    background: radial-gradient(circle at 35% 30%, #a78bfa, var(--accent) 55%, #4b3bb8);
-    color: #fff; font: 600 16px -apple-system, sans-serif; box-shadow: 0 10px 30px rgba(124,92,255,.35);
-    transition: transform .08s ease, box-shadow .2s; }
-  .orb:active { transform: scale(.97); }
-  .orb.live { background: radial-gradient(circle at 35% 30%, #fda4af, var(--live) 55%, #be3455);
-    box-shadow: 0 10px 30px rgba(251,113,133,.4); }
-  .orb.busy { opacity: .7; cursor: progress; }
-  .ring { position: absolute; inset: -10px; border-radius: 50%; border: 3px solid var(--accent2);
-    opacity: 0; transition: opacity .1s, transform .1s; pointer-events: none; }
-  .status { color: var(--muted); min-height: 21px; text-align: center; }
-  .meta { color: var(--muted); font-size: 12px; text-align: center; max-width: 560px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .meters { display: flex; gap: 18px; font-size: 11px; color: var(--muted); align-items: center; }
-  .bar { width: 90px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 6px; }
-  .bar > i { display: block; height: 100%; width: 0; background: var(--accent2); transition: width .08s; }
-  .bar.me > i { background: #34d399; }
-  .transcript { margin: 0 16px 16px; padding: 14px 16px; overflow-y: auto; border-radius: 12px;
-    background: var(--panel); border: 1px solid var(--border); min-height: 0; }
-  .transcript h2 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-  .transcript p { margin: 0 0 10px; }
-  .transcript .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 6px; }
-  .empty { color: var(--muted); font-style: italic; }
-  .saved { font-size: 12px; color: var(--muted); }
-  .who { font-weight: 600; margin-right: 6px; }
-  .pickrow { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; max-width: 760px; }
-  .pickrow .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--panel);
-    color: var(--text); border-radius: 999px; padding: 4px 6px 4px 12px; font: 13px -apple-system, sans-serif; cursor: pointer; }
-  .pill.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-  .pill small { color: var(--muted); font-size: 11px; }
-  .pill .play { border: 0; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text);
-    width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 10px; line-height: 22px; padding: 0; }
-  .pickrow.locked .pill { opacity: .55; cursor: not-allowed; }
-  .who.you { color: #34d399; }
-  .who.ai { color: var(--accent); }
-  .done { display: none; border: 1px solid var(--border); background: var(--panel); color: var(--text);
-    border-radius: 999px; padding: 6px 16px; font: 13px -apple-system, sans-serif; cursor: pointer; }
-  .done.show { display: inline-block; }
-</style>
+<title>Air engine</title>
+<style>html, body { margin: 0; background: transparent; }</style>
 </head>
 <body>
-  <div class="hint" role="note" id="hint">🎧 <b>Use headphones.</b> <span id="hintText"></span></div>
-  <main>
-    <section class="stage">
-      <div class="pickrow" id="personaRow" aria-label="Personality"></div>
-      <div class="pickrow" id="voiceRow" aria-label="Voice"></div>
-      <button id="orb" class="orb" aria-label="Start conversation"><span class="ring" id="ring"></span><span id="orbLabel">Start</span></button>
-      <div class="status" id="status">Ready. Press Start and talk.</div>
-      <div class="status" id="lag" style="display:none;color:#fb7185;font-size:12px"></div>
-      <button class="done" id="doneBtn" title="End your turn now instead of waiting for the pause">Done talking</button>
-      <div class="meta" id="meta"></div>
-      <div class="meters"><span>You<span class="bar me"><i id="micBar"></i></span></span><span id="aiLabel">Aria<span class="bar"><i id="outBar"></i></span></span></div>
-    </section>
-    <section class="transcript" id="transcriptBox" aria-live="polite">
-      <h2 id="trHead">Conversation</h2>
-      <div id="transcript"><p class="empty" id="emptyNote"></p></div>
-    </section>
-  </main>
 <script>
+// Air's audio engine. The visible UI is native (SwiftUI); this page only does microphone capture,
+// playback, the WebSocket to Aria's local server and voice previews, and reports every event to the
+// app through window.webkit.messageHandlers.air. The app drives it with window.air*() calls.
 (() => {
-  const cfg = Object.assign({ mode: 'aria', name: 'Aria', voice: 'af_heart', persona: '' }, window.airConfig || {});
-  const isAria = () => cfg.mode === 'aria';
-  const $ = (id) => document.getElementById(id);
-  const orb = $('orb'), label = $('orbLabel'), statusEl = $('status'), meta = $('meta');
-  const transcript = $('transcript'), box = $('transcriptBox');
-  let ctx = null, ws = null, mic = null, capture = null, player = null, src = null;
-  let live = false, startTime = 0, lastText = 0, curP = null;
+  const cfg = Object.assign({ voice: 'af_heart', persona: '', personality: '', think: false, web: true }, window.airConfig || {});
+  let ctx = null, ws = null, mic = null, capture = null, player = null, src = null, live = false;
+  let lastLevelPost = 0, micLevel = 0, outLevel = 0, previewAudio = null;
 
   const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
-  const setStatus = (t) => { statusEl.textContent = t; };
-  const renderMeta = () => {
-    meta.textContent = '';
-    $('aiLabel').firstChild.textContent = cfg.name;
-    $('hintText').textContent = isAria()
-      ? `${cfg.name} stops talking when you start, so through speakers it may interrupt itself.`
-      : `${cfg.name} has no echo cancellation, so through speakers it can hear itself and talk over you.`;
-    const empty = $('emptyNote');
-    if (empty) empty.textContent = isAria()
-      ? 'Both sides of the conversation appear here. Pause briefly when you finish and Aria replies.'
-      : `The text of what ${cfg.name} says appears here. Your own speech is not transcribed in this mode.`;
-  };
-  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); renderMeta(); renderVoices(); renderPersonas(); };
+  const text = (data) => new TextDecoder().decode(data.slice(1));
 
-  // ---- personality picker ----
-  function renderPersonas() {
-    const row = $('personaRow');
-    row.innerHTML = '<span class="lbl">Personality</span>';
-    (cfg.personalities || []).forEach((p) => {
-      const pill = document.createElement('span');
-      pill.className = 'pill' + (p.id === cfg.personality ? ' on' : '');
-      pill.style.paddingRight = '12px';
-      pill.title = p.note;
-      pill.setAttribute('role', 'button');
-      pill.innerHTML = `<span>${p.name}</span>`;
-      pill.addEventListener('click', () => {
-        if (live) return;
-        cfg.personality = p.id;
-        post({ type: 'set', key: 'personality', value: p.id });
-        renderPersonas();
-      });
-      row.appendChild(pill);
-    });
-    const cur = (cfg.personalities || []).find((p) => p.id === cfg.personality);
-    if (cur) { const n = document.createElement('small'); n.style.color = 'var(--muted)'; n.textContent = cur.note; row.appendChild(n); }
-    row.classList.toggle('locked', live);
-  }
-
-  // ---- voice picker (five best Kokoro voices, with previews) ----
-  let previewAudio = null;
-  function renderVoices() {
-    const row = $('voiceRow');
-    row.innerHTML = '<span class="lbl">Voice</span>';
-    (cfg.voices || []).forEach((v) => {
-      const pill = document.createElement('span');
-      pill.className = 'pill' + (v.id === cfg.voice ? ' on' : '');
-      pill.title = v.note;
-      pill.setAttribute('role', 'button');
-      pill.innerHTML = `<span>${v.name}</span><small>${v.note}</small>`;
-      const play = document.createElement('button');
-      play.className = 'play'; play.textContent = '▶'; play.title = `Hear ${v.name}`;
-      play.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (live) return;
-        play.textContent = '…';
-        try {
-          if (previewAudio) previewAudio.pause();
-          previewAudio = new Audio(`/api/preview?voice=${encodeURIComponent(v.id)}`);
-          previewAudio.onended = () => { play.textContent = '▶'; };
-          await previewAudio.play();
-          play.textContent = '■';
-        } catch (_) { play.textContent = '▶'; }
-      });
-      pill.appendChild(play);
-      pill.addEventListener('click', () => {
-        if (live) return;
-        cfg.voice = v.id;
-        post({ type: 'set', key: 'voice', value: v.id });
-        renderVoices(); renderMeta();
-      });
-      row.appendChild(pill);
-    });
-    row.classList.toggle('locked', live);
-  }
-  renderMeta();
-  renderVoices();
-  renderPersonas();
-
-  function fmt(sec) { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
-
-  function addLine(who, text) {
-    if (transcript.querySelector('.empty')) transcript.innerHTML = '';
-    const p = document.createElement('p');
-    const t = document.createElement('span'); t.className = 't'; t.textContent = fmt((performance.now() - startTime) / 1000);
-    const w = document.createElement('span'); w.className = 'who ' + (who === 'You' ? 'you' : 'ai'); w.textContent = who;
-    p.append(t, w, document.createTextNode(text));
-    transcript.appendChild(p);
-    box.scrollTop = box.scrollHeight;
-    return p;
-  }
-  let aiP = null;
-  function addAria(text) {
-    if (!aiP) aiP = addLine(cfg.name, '');
-    aiP.lastChild.textContent += text;
-    box.scrollTop = box.scrollHeight;
-  }
-  const states = { listening: () => 'Listening… just talk.', hearing: () => 'Hearing you…',
-    thinking: () => `${cfg.name} is thinking…`, speaking: () => `${cfg.name} is speaking. Talk any time to interrupt.` };
-
-  function addText(piece) {
+  function postLevels() {
     const now = performance.now();
-    if (!curP || now - lastText > 3000) {
-      if (transcript.querySelector('.empty')) transcript.innerHTML = '';
-      curP = document.createElement('p');
-      const t = document.createElement('span'); t.className = 't'; t.textContent = fmt((now - startTime) / 1000);
-      curP.appendChild(t);
-      curP.appendChild(document.createTextNode(''));
-      transcript.appendChild(curP);
-      piece = piece.replace(/^\s+/, '');
-    }
-    curP.lastChild.textContent += piece;
-    lastText = now;
-    box.scrollTop = box.scrollHeight;
+    if (now - lastLevelPost < 60) return;        // ~16 updates a second is plenty for the orb
+    lastLevelPost = now;
+    post({ type: 'levels', mic: micLevel, out: outLevel });
   }
 
   async function start() {
-    if (live) return;
-    orb.classList.add('busy'); label.textContent = '…';
+    if (live || ws) return;
+    post({ type: 'state', state: 'connecting' });
     try {
       if (!ctx) {
         ctx = new AudioContext({ latencyHint: 'interactive' });
         await ctx.audioWorklet.addModule('/static/worklet.js');
       }
       await ctx.resume();
-      setStatus('Asking for the microphone…');
       mic = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (err) {
-      orb.classList.remove('busy'); label.textContent = 'Start';
-      setStatus('Microphone unavailable: ' + (err && err.message ? err.message : err) + '. Check System Settings › Privacy & Security › Microphone › Air.');
+      post({ type: 'error', message: 'Microphone unavailable: ' + (err && err.message ? err.message : err) });
+      post({ type: 'state', state: 'idle' });
       return;
     }
-    transcript.innerHTML = `<p class="empty">Preparing ${cfg.name} with your persona and voice…</p>`;
-    curP = null;
-    setStatus('Preparing persona and voice…');
-    const q = new URLSearchParams({ mode: cfg.mode, voice: cfg.voice || '', persona: cfg.persona || '',
+    const q = new URLSearchParams({ voice: cfg.voice || '', persona: cfg.persona || '', personality: cfg.personalityName || '',
       think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1' });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {
       const data = new Uint8Array(ev.data);
       const kind = data[0];
-      if (kind === 0) { goLive(); }
+      if (kind === 0) goLive();
       else if (kind === 1) {
         const pcm = new Int16Array(ev.data.slice(1));
         const f = new Float32Array(pcm.length);
         for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
         if (player) player.port.postMessage(f.buffer, [f.buffer]);
-      } else if (kind === 2) {
-        const txt = new TextDecoder().decode(data.slice(1));
-        if (isAria()) addAria(txt); else addText(txt);
       }
-      else if (kind === 3) { setStatus(new TextDecoder().decode(data.slice(1))); }
-      else if (kind === 8) {
-        const lag = parseFloat(new TextDecoder().decode(data.slice(1)));
-        const el = $('lag');
-        el.style.display = lag >= 0.8 ? 'block' : 'none';
-        el.textContent = `Falling behind by ${lag.toFixed(1)} s, catching up (skipping pauses)`;
-      }
-      else if (kind === 5) { aiP = null; addLine('You', new TextDecoder().decode(data.slice(1))); }
-      else if (kind === 6) { if (player) player.port.postMessage('reset'); aiP = null; }
-      else if (kind === 7) {
-        const st = new TextDecoder().decode(data.slice(1));
-        if (st === 'listening' || st === 'hearing') aiP = null;
-        if (live && states[st]) setStatus(states[st]());
-      }
+      else if (kind === 2) post({ type: 'aria', text: text(data) });
+      else if (kind === 3) post({ type: 'error', message: text(data) });
+      else if (kind === 5) post({ type: 'you', text: text(data) });
+      else if (kind === 6) { if (player) player.port.postMessage('reset'); post({ type: 'interrupted' }); }
+      else if (kind === 7) post({ type: 'state', state: text(data) });
+      else if (kind === 8) post({ type: 'lag', seconds: parseFloat(text(data)) });
+      else if (kind === 9) { try { post(Object.assign({ type: 'event' }, JSON.parse(text(data)))); } catch (_) {} }
     };
-    ws.onclose = () => { stop(true); };
-    ws.onerror = () => { setStatus('Lost connection to the model.'); };
+    ws.onclose = () => stop(true);
+    ws.onerror = () => post({ type: 'error', message: 'Lost connection to the model.' });
   }
 
   function goLive() {
-    live = true; startTime = performance.now();
-    if (transcript.querySelector('.empty')) transcript.innerHTML = '<p class="empty">Listening… say hello.</p>';
-    $('doneBtn').classList.toggle('show', isAria());
-    orb.classList.remove('busy'); orb.classList.add('live'); label.textContent = 'End';
-    orb.setAttribute('aria-label', 'End conversation');
-    setStatus(`Live. Talk to ${cfg.name}.`);
+    live = true;
     src = ctx.createMediaStreamSource(mic);
     capture = new AudioWorkletNode(ctx, 'air-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
     capture.port.onmessage = (e) => {
-      $('micBar').style.width = Math.min(100, e.data.level * 400) + '%';
+      micLevel = e.data.level; postLevels();
       if (ws && ws.readyState === 1) {
         const body = new Uint8Array(e.data.pcm);
         const msg = new Uint8Array(body.length + 1); msg[0] = 1; msg.set(body, 1);
@@ -280,10 +80,9 @@
     };
     src.connect(capture);
     player = new AudioWorkletNode(ctx, 'air-player', { numberOfInputs: 0, outputChannelCount: [2] });
-    player.port.onmessage = (e) => { $('outBar').style.width = Math.min(100, e.data.level * 400) + '%'; };
+    player.port.onmessage = (e) => { outLevel = e.data.level; postLevels(); };
     player.connect(ctx.destination);
     post({ type: 'state', state: 'live' });
-    renderVoices(); renderPersonas();
   }
 
   function stop(fromClose) {
@@ -291,30 +90,32 @@
     live = false;
     if (ws && !fromClose) { try { ws.close(); } catch (_) {} }
     ws = null;
-    if (src) { try { src.disconnect(); } catch (_) {} src = null; }
-    if (capture) { try { capture.disconnect(); } catch (_) {} capture = null; }
-    if (player) { try { player.disconnect(); } catch (_) {} player = null; }
+    for (const n of [src, capture, player]) { if (n) { try { n.disconnect(); } catch (_) {} } }
+    src = capture = player = null;
     if (mic) { mic.getTracks().forEach((t) => t.stop()); mic = null; }
-    $('micBar').style.width = '0'; $('outBar').style.width = '0';
-    $('doneBtn').classList.remove('show');
-    $('lag').style.display = 'none';
-    orb.classList.remove('live', 'busy'); label.textContent = 'Start';
-    orb.setAttribute('aria-label', 'Start conversation');
-    renderVoices(); renderPersonas();
-    if (wasLive) {
-      setStatus('Conversation ended. Saved to the Air vault in Obsidian (see History).');
-      post({ type: 'state', state: 'ended' });
-    } else if (fromClose && statusEl.textContent.startsWith('Preparing')) {
-      setStatus('Could not start the conversation.');
-    }
+    micLevel = outLevel = 0; lastLevelPost = 0; postLevels();
+    post({ type: 'state', state: wasLive ? 'ended' : 'idle' });
   }
 
-  $('doneBtn').addEventListener('click', () => {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'end_turn' }));
-  });
-  orb.addEventListener('click', () => { if (live) stop(false); else if (!ws) start(); });
+  const sendJSON = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); };
+  window.airStart = () => start();
   window.airStop = () => stop(false);
-  window.addEventListener('keydown', (e) => { if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); orb.click(); } });
+  window.airEndTurn = () => sendJSON({ type: 'end_turn' });
+  window.airInterrupt = () => { if (player) player.port.postMessage('reset'); sendJSON({ type: 'stop_speaking' }); };
+  window.airConfirm = (answer) => sendJSON({ type: 'confirm', answer });
+  window.airSay = (t) => sendJSON({ type: 'say', text: t });
+  window.airPreview = async (voice) => {
+    try {
+      if (previewAudio) previewAudio.pause();
+      previewAudio = new Audio(`/api/preview?voice=${encodeURIComponent(voice)}`);
+      previewAudio.onended = () => post({ type: 'preview', voice, playing: false });
+      post({ type: 'preview', voice, playing: true });
+      await previewAudio.play();
+    } catch (_) { post({ type: 'preview', voice, playing: false }); }
+  };
+  window.airStopPreview = () => { if (previewAudio) { previewAudio.pause(); post({ type: 'preview', voice: '', playing: false }); } };
+  post({ type: 'ready' });
 })();
 </script>
 </body>

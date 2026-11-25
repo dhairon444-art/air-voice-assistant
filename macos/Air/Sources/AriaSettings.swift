@@ -25,6 +25,13 @@ enum Voices {
         ("af_sarah", "Sarah", "clear, American"),
     ]
     static let defaultVoice = "af_heart"
+    /// Display name for a voice id, including voices from older sessions.
+    static func name(_ id: String) -> String {
+        if let v = all.first(where: { $0.id == id }) { return v.name }
+        if id.isEmpty { return "Voice" }
+        let parts = id.split(separator: "_")
+        return parts.count == 2 ? parts[1].capitalized : id
+    }
     static func valid(_ v: String?) -> String { all.contains { $0.id == v } ? v! : defaultVoice }
 }
 
@@ -50,6 +57,20 @@ enum Personas {
     static let customStarter = "IDENTITY\nYou are Aria. Describe who Aria should be here.\n\nVALUES, IN ORDER\n1. Truth. 2. Usefulness. 3. Comfort.\n\nRULES\n- Correct me plainly when I'm wrong. Never flatter me."
     static func preset(_ id: String) -> Personality? { presets.first { $0.id == id } }
     static func name(_ id: String) -> String { id == customID ? "Custom" : (preset(id)?.name ?? id) }
+    /// Which personality a saved persona text came from (older notes store only the text).
+    static func nameForText(_ text: String) -> String {
+        if let p = presets.first(where: { $0.text == text }) { return p.name }
+        if text.hasPrefix("IDENTITY") {
+            for p in presets where text.contains(p.text.split(separator: "\n").dropFirst().first.map(String.init) ?? "\u{0}") {
+                return p.name
+            }
+        }
+        // Presets from earlier versions of Air
+        if text.contains("warm, kind and encouraging") || text.contains("warm and curious companion") { return "Warm companion" }
+        if text.contains("wise and friendly teacher") { return "Thoughtful teacher" }
+        if text.contains("life coach") { return "Coach" }
+        return text.isEmpty ? "" : "Custom"
+    }
 }
 
 /// User settings, stored in UserDefaults.
@@ -97,4 +118,23 @@ final class Prefs: ObservableObject {
 
     /// The text sent to the model.
     var persona: String { text(for: personality) }
+
+    /// Settings the audio engine sends with each conversation.
+    var engineConfig: [String: Any] {
+        ["voice": voice, "persona": persona, "personality": personality,
+         "personalityName": Personas.name(personality),
+         "think": thinkFirst && brain.canThink, "web": factCheck]
+    }
+    /// Changes whenever engineConfig would change (for onChange).
+    var engineConfigKey: String {
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(brain.rawValue)"
+    }
+
+    @Published var globalHotkey: Bool = UserDefaults.standard.object(forKey: "airGlobalHotkey") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(globalHotkey, forKey: "airGlobalHotkey"); onUIPrefsChanged?() }
+    }
+    @Published var menuBarIcon: Bool = UserDefaults.standard.object(forKey: "airMenuBarIcon") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(menuBarIcon, forKey: "airMenuBarIcon"); onUIPrefsChanged?() }
+    }
+    var onUIPrefsChanged: (() -> Void)?
 }

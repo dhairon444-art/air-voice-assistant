@@ -219,6 +219,10 @@ def parse_tool_calls(text: str) -> list[dict]:
             pass
     calls = []
     dec = json.JSONDecoder()
+    if "<tool_call>" not in text:
+        loose = parse_loose_calls(text)
+        if loose:
+            return loose
     for m in re.finditer(r"<tool_call>", text):
         start = text.find("{", m.end())
         if start < 0:
@@ -244,6 +248,49 @@ ACTION_TOOLS = NEEDS_CONFIRMATION | {"open_app", "switch_to_app", "open_file", "
 _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment|one moment|give me a (moment|second)|"
                      r"right away|done|has been|have been|i've (closed|quit|moved|deleted|cancel+ed|added|set|muted|sent|created|marked))\b",
                      re.I)
+
+
+_TOOL_RE = None
+
+
+def _tool_regex():
+    global _TOOL_RE
+    if _TOOL_RE is None:
+        names = sorted(TOOL_NAMES, key=len, reverse=True)
+        alts = "|".join(re.escape(n) + "|" + re.escape(n.replace("_", "")) for n in names)
+        _TOOL_RE = re.compile(rf"\b({alts})\b\s*(\(([^()]*)\)|((?:\s*\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,)]+),?)+))")
+    return _TOOL_RE
+
+
+def parse_loose_calls(text: str) -> list[dict]:
+    """Small models sometimes write a call as code or plain text instead of <tool_call> JSON,
+    e.g. add_reminder(title="Call Mum", due="...") or 'addreminder title="Call Mum"'.
+    Recognise those for known tools so the call still goes through the normal path."""
+    out = []
+    by_flat = {n.replace("_", ""): n for n in TOOL_NAMES}
+    for m in _tool_regex().finditer(text):
+        name = m.group(1)
+        name = name if name in TOOL_NAMES else by_flat.get(name)
+        argstr = m.group(3) if m.group(3) is not None else (m.group(4) or "")
+        args = {}
+        for k, v in re.findall(r"(\w+)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s,)]+)", argstr):
+            v = v.strip("\"'")
+            if v.lower() in ("true", "false"):
+                v = v.lower() == "true"
+            else:
+                try:
+                    v = int(v) if re.fullmatch(r"-?\d+", v) else float(v) if re.fullmatch(r"-?\d+\.\d+", v) else v
+                except ValueError:
+                    pass
+            args[k] = v
+        if name and (args or m.group(2).startswith("(")):
+            out.append({"name": name, "arguments": args})
+    return out
+
+
+def looks_like_tool_text(text: str) -> bool:
+    """A sentence that is really a tool call written as text (never speak it)."""
+    return bool(_tool_regex().search(text or ""))
 
 
 _ACT = (r"(closed|quit|moved|deleted|cancel+ed|added|set|muted|unmuted|sent|created|marked|opened|switched|"

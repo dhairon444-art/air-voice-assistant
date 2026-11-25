@@ -4,7 +4,9 @@ import Foundation
 /// The "Air" Obsidian vault and the session notes inside it.
 enum Vault {
     static let name = "Air"
-    static let url: URL = FileManager.default.homeDirectoryForCurrentUser
+    /// The owner's vault, or a test vault given with `-AirVault <path>` (keeps tests out of real notes).
+    static let url: URL = UserDefaults.standard.string(forKey: "AirVault").map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Obsidian vaults/Air", isDirectory: true)
     static var sessionsURL: URL { url.appendingPathComponent("Sessions", isDirectory: true) }
     static var indexURL: URL { url.appendingPathComponent("Air Index.md") }
@@ -72,7 +74,14 @@ struct SessionNote: Identifiable, Hashable {
     let persona: String
     let status: String
     let mode: String
+    let summary: String
+    let personality: String
+    /// Lowercased note text, for search.
+    let searchText: String
     var id: URL { url }
+
+    var timeLabel: String { date?.formatted(date: .omitted, time: .shortened) ?? title }
+    var voiceName: String { Voices.name(voice) }
 
     static func load(_ url: URL) -> SessionNote {
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -93,7 +102,10 @@ struct SessionNote: Identifiable, Hashable {
             start: fm["start"] ?? "", end: fm["end"] ?? "",
             duration: fm["duration"] ?? "", voice: fm["voice"] ?? "",
             persona: fm["persona"] ?? "", status: fm["status"] ?? "",
-            mode: fm["mode"] ?? "Aria"
+            mode: fm["mode"] ?? "Aria",
+            summary: fm["summary"] ?? "",
+            personality: fm["personality"].flatMap { $0.isEmpty ? nil : $0 } ?? Personas.nameForText(fm["persona"] ?? ""),
+            searchText: text.lowercased()
         )
     }
 

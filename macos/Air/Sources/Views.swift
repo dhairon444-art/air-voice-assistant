@@ -2,56 +2,70 @@ import AppKit
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case talk = "Talk", history = "History", settings = "Settings"
+    case talk = "Talk", history = "History"
     var id: String { rawValue }
-    var symbol: String {
-        switch self {
-        case .talk: return "waveform"
-        case .history: return "clock.arrow.circlepath"
-        case .settings: return "slider.horizontal.3"
-        }
-    }
+    var symbol: String { self == .talk ? "waveform" : "clock.arrow.circlepath" }
+}
+
+/// Shared between the window, menus and shortcuts.
+@MainActor
+final class UIState: ObservableObject {
+    @Published var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "AirInitialTab") ?? "") ?? .talk
+    @Published var showOnboarding = false
 }
 
 struct ContentView: View {
     @EnvironmentObject var model: ModelProcess
     @EnvironmentObject var web: WebController
     @EnvironmentObject var prefs: Prefs
-    // `-AirInitialTab History` on the command line opens another tab first (used for testing).
-    @State private var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "AirInitialTab") ?? "") ?? .talk
+    @EnvironmentObject var ui: UIState
 
     var body: some View {
         ZStack {
-            // The web view stays in the hierarchy so a live conversation keeps running on other tabs.
-            talkView.opacity(tab == .talk ? 1 : 0).allowsHitTesting(tab == .talk)
-            if tab == .history { HistoryView().background(Color(nsColor: .windowBackgroundColor)) }
-            if tab == .settings { SettingsView().background(Color(nsColor: .windowBackgroundColor)) }
+            // The engine's web view stays in the window (tiny, invisible) so audio keeps running on any tab.
+            EngineHost(controller: web).frame(width: 2, height: 2).opacity(0.01).accessibilityHidden(true)
+            Group {
+                switch ui.tab {
+                case .talk: talkView
+                case .history: HistoryView()
+                }
+            }
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 640, minHeight: 560)
+        .background(.background)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Picker("View", selection: $tab) {
+                Picker("View", selection: $ui.tab) {
                     ForEach(Tab.allCases) { t in Label(t.rawValue, systemImage: t.symbol).tag(t) }
                 }
                 .pickerStyle(.segmented)
                 .labelStyle(.titleAndIcon)
+                .help("Switch between Talk (⌘1) and History (⌘2)")
             }
-            ToolbarItem(placement: .status) {
-                if web.live {
-                    Label("Live", systemImage: "record.circle").foregroundStyle(.red)
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 10) {
+                    if web.live {
+                        Label("Live", systemImage: "record.circle")
+                            .foregroundStyle(.red)
+                            .labelStyle(.titleAndIcon)
+                            .font(.callout.weight(.medium))
+                            .accessibilityLabel("Conversation is live")
+                    }
+                    Button { AppActions.openSettings(.general) } label: { Image(systemName: "gearshape") }
+                        .help("Settings (⌘,)")
+                        .accessibilityLabel("Settings")
                 }
             }
         }
+        .sheet(isPresented: $ui.showOnboarding) { OnboardingView() }
         .onChange(of: model.state) { _, s in
             switch s {
-            case .ready(let port): web.load(port: port, voice: prefs.voice, persona: prefs.persona, personality: prefs.personality)
+            case .ready(let port): web.load(port: port, config: prefs.engineConfig)
             default: web.unload()
             }
         }
-        .onChange(of: prefs.voice) { _, v in web.updateConfig(voice: v, persona: prefs.persona, personality: prefs.personality) }
-        .onChange(of: prefs.persona) { _, p in web.updateConfig(voice: prefs.voice, persona: p, personality: prefs.personality) }
-        .onChange(of: prefs.thinkFirst) { _, _ in web.updateConfig(voice: prefs.voice, persona: prefs.persona, personality: prefs.personality) }
-        .onChange(of: prefs.factCheck) { _, _ in web.updateConfig(voice: prefs.voice, persona: prefs.persona, personality: prefs.personality) }
+        .onChange(of: prefs.engineConfigKey) { _, _ in web.updateConfig(prefs.engineConfig) }
+        .onChange(of: prefs.personality) { _, _ in web.prime(persona: prefs.persona) }
         .onChange(of: prefs.brain) { _, b in
             model.restart(voice: prefs.voice, persona: prefs.persona, brain: b)
         }
@@ -60,7 +74,7 @@ struct ContentView: View {
     @ViewBuilder var talkView: some View {
         switch model.state {
         case .ready:
-            WebViewHost(controller: web)
+            TalkView()
         case .failed(let msg):
             FailedView(message: msg) { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain) }
         default:
@@ -72,20 +86,22 @@ struct ContentView: View {
 struct LoadingView: View {
     @EnvironmentObject var model: ModelProcess
     var body: some View {
-        VStack(spacing: 18) {
-            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96)
+        VStack(spacing: 16) {
+            OrbView(state: .connecting, mic: 0, out: 0)
+                .frame(width: 120, height: 120)
+                .accessibilityHidden(true)
             Text("Aria is waking up").font(.title2.weight(.semibold))
-            ProgressView().controlSize(.large)
-            Text(model.status).foregroundStyle(.secondary)
+            Text(model.status).foregroundStyle(.secondary).contentTransition(.opacity)
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text("\(Int(ctx.date.timeIntervalSince(model.startedAt)))s · first load can take a minute or two")
+                Text("\(Int(ctx.date.timeIntervalSince(model.startedAt))) s · usually 15 to 30 s")
                     .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
             }
-            Text("🎧 Use headphones: Aria stops talking when she hears you.")
-                .font(.callout).padding(.top, 8)
+            Label("Everything runs on this Mac.", systemImage: "lock.shield")
+                .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -95,64 +111,97 @@ struct FailedView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 40)).foregroundStyle(.orange)
-            Text("The model could not start").font(.title2.weight(.semibold))
+                .accessibilityHidden(true)
+            Text("Aria couldn't start").font(.title2.weight(.semibold))
             ScrollView {
                 Text(message).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: 560, maxHeight: 180)
             .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             HStack {
-                Button("Try again", action: retry).keyboardShortcut(.defaultAction)
-                Button("Show log") { NSWorkspace.shared.open(ModelProcess.logURL) }
+                Button("Show Log") { NSWorkspace.shared.open(ModelProcess.logURL) }
+                Button("Try Again", action: retry).keyboardShortcut(.defaultAction)
             }
+            .controlSize(.large)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
+// MARK: - History
+
 struct HistoryView: View {
     @EnvironmentObject var model: ModelProcess
     @State private var notes: [SessionNote] = []
     @State private var selection: SessionNote.ID?
+    @State private var query = ""
+
+    private var filtered: [SessionNote] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return notes }
+        let words = q.split(separator: " ").map(String.init)
+        return notes.filter { n in words.allSatisfy { n.searchText.contains($0) } }
+    }
+
+    private var groups: [(day: String, notes: [SessionNote])] {
+        let cal = Calendar.current
+        var out: [(String, [SessionNote])] = []
+        for n in filtered {
+            let label: String
+            if let d = n.date {
+                if cal.isDateInToday(d) { label = "Today" }
+                else if cal.isDateInYesterday(d) { label = "Yesterday" }
+                else { label = d.formatted(.dateTime.weekday(.wide).day().month(.wide).year()) }
+            } else { label = "Undated" }
+            if out.last?.0 == label { out[out.count - 1].1.append(n) } else { out.append((label, [n])) }
+        }
+        return out
+    }
 
     var body: some View {
         HSplitView {
-            List(selection: $selection) {
-                if notes.isEmpty {
-                    Text("No conversations yet").foregroundStyle(.secondary)
-                }
-                ForEach(notes) { n in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(n.title).font(.body.weight(.medium))
-                        Text([n.mode, n.duration, n.voice].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                    .tag(n.id)
-                    .contextMenu {
-                        Button("Open in Obsidian") { Vault.open(n.url) }
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([n.url]) }
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search conversations", text: $query)
+                        .textFieldStyle(.plain)
+                        .accessibilityLabel("Search conversations")
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search")
                     }
                 }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(10)
+                List(selection: $selection) {
+                    if filtered.isEmpty {
+                        ContentUnavailableView(query.isEmpty ? "No conversations yet" : "No matches",
+                                               systemImage: query.isEmpty ? "text.bubble" : "magnifyingglass",
+                                               description: Text(query.isEmpty ? "Talk to Aria and your conversations appear here." : "Try other words."))
+                    }
+                    ForEach(groups, id: \.day) { g in
+                        Section(g.day) {
+                            ForEach(g.notes) { n in HistoryRow(note: n).tag(n.id) }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
             }
-            .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
-
+            .frame(minWidth: 250, idealWidth: 300, maxWidth: 420)
             Group {
                 if let id = selection, let note = notes.first(where: { $0.id == id }) {
                     SessionDetail(note: note)
                 } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: "text.bubble").font(.system(size: 36)).foregroundStyle(.secondary)
-                        Text("Pick a conversation to read it").foregroundStyle(.secondary)
-                        Button("Open Air Index in Obsidian") { Vault.open(Vault.indexURL) }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ContentUnavailableView("Pick a conversation", systemImage: "text.bubble",
+                                           description: Text("Each conversation is also a note in your Air vault in Obsidian."))
                 }
             }
-            .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            .background(.background)
         }
         .onAppear(perform: reload)
         .onChange(of: model.sessionsChanged) { _, _ in reload() }
@@ -164,119 +213,105 @@ struct HistoryView: View {
     }
 }
 
+struct HistoryRow: View {
+    let note: SessionNote
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(note.timeLabel).font(.body.weight(.semibold))
+                Spacer()
+                Text(note.duration).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Text([note.personality, note.voiceName].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary)
+            if !note.summary.isEmpty {
+                Text(note.summary).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct SessionDetail: View {
     let note: SessionNote
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.title).font(.title2.weight(.semibold))
-                    Text("\(note.mode) · \(note.start)–\(note.end) · \(note.duration) · voice \(note.voice)\(note.status == "in-progress" ? " · in progress" : "")")
-                        .font(.callout).foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(note.title).font(.title2.weight(.semibold))
+                        Spacer()
+                        Button { NSWorkspace.shared.activateFileViewerSelecting([note.url]) } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help("Show the note in Finder").accessibilityLabel("Show in Finder")
+                        ViewThatFits {
+                            Button { Vault.open(note.url) } label: { Label("Open in Obsidian", systemImage: "arrow.up.forward.app") }
+                            Button { Vault.open(note.url) } label: { Image(systemName: "arrow.up.forward.app") }
+                                .accessibilityLabel("Open in Obsidian")
+                        }
+                        .help("Open this conversation in Obsidian")
+                    }
+                    HStack(spacing: 6) {
+                        MetaChip(symbol: "clock", text: "\(note.start)–\(note.end) · \(note.duration)")
+                        if !note.personality.isEmpty { MetaChip(symbol: "person.crop.circle", text: note.personality) }
+                        MetaChip(symbol: "waveform", text: note.voiceName)
+                        if note.status == "in-progress" { MetaChip(symbol: "record.circle", text: "In progress") }
+                    }
                 }
-                Spacer()
-                Button {
-                    Vault.open(note.url)
-                } label: { Label("Open in Obsidian", systemImage: "arrow.up.forward.app") }
-            }
-            .padding(16)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    GroupBox("Persona") {
-                        Text(note.persona).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                if !note.summary.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Summary", systemImage: "text.alignleft").font(.headline)
+                        Text(note.summary).textSelection(.enabled)
                     }
-                    let lines = note.transcript()
-                    if !lines.contains(where: { $0.speaker == "You" }) {
-                        Text("\(note.mode)'s side of the conversation. This mode does not transcribe your speech.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                let lines = note.transcript()
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Conversation").font(.headline)
                     if lines.isEmpty {
-                        Text("Nothing was said in this session.").italic().foregroundStyle(.secondary)
+                        Text("Nothing was said in this session.").foregroundStyle(.secondary)
+                    }
+                    if !lines.contains(where: { $0.speaker == "You" }) && !lines.isEmpty {
+                        Text("Only Aria's side was recorded in this session.").font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(line.time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text(line.time).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                                .frame(width: 40, alignment: .trailing)
                             Text(line.speaker).font(.callout.weight(.semibold))
-                                .foregroundStyle(line.speaker == "You" ? Color.green : Color.accentColor)
+                                .foregroundStyle(line.speaker == "You" ? Color.secondary : Color.accentColor)
+                                .frame(width: 34, alignment: .leading)
                             Text(line.text).textSelection(.enabled)
                         }
+                        .accessibilityElement(children: .combine)
                     }
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                if !note.persona.isEmpty {
+                    DisclosureGroup("Personality used") {
+                        Text(note.persona).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                    }
+                }
             }
+            .padding(24)
+            .frame(maxWidth: 820, alignment: .leading)
         }
         .id(note.id)
     }
 }
 
-struct SettingsView: View {
-    @EnvironmentObject var model: ModelProcess
-    @EnvironmentObject var web: WebController
-    @EnvironmentObject var prefs: Prefs
-
+struct MetaChip: View {
+    let symbol: String
+    let text: String
     var body: some View {
-        Form {
-            Section {
-                Picker("Brain", selection: $prefs.brain) {
-                    ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
-                }
-                .disabled(web.live)
-                Toggle("Think first", isOn: $prefs.thinkFirst)
-                    .disabled(!prefs.brain.canThink)
-                Toggle("Online fact-check", isOn: $prefs.factCheck)
-            } footer: {
-                Text(prefs.brain.footer
-                     + (prefs.brain.canThink ? " Think first: Aria reasons silently before answering, which adds delay." : " Think first needs a brain that can reason (not Fast).")
-                     + " Online fact-check: when the Mac is online, Aria may look facts up (only the search words leave the Mac) and says what an answer is based on; offline she answers from the model."
-                     + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section {
-                Picker("Personality", selection: $prefs.personality) {
-                    ForEach(Personas.presets) { p in Text(p.name).tag(p.id) }
-                    Text("Custom").tag(Personas.customID)
-                }
-                Text(Personas.preset(prefs.personality)?.summary ?? "Your own personality text.")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: Binding(get: { prefs.text(for: prefs.personality) },
-                                         set: { prefs.setText($0, for: prefs.personality) }))
-                    .font(.system(.callout, design: .monospaced))
-                    .frame(minHeight: 260)
-                HStack {
-                    if prefs.isEdited(prefs.personality) {
-                        Text("Edited").font(.caption).foregroundStyle(.orange)
-                    }
-                    Spacer()
-                    Button("Reset to default") { prefs.reset(prefs.personality) }
-                        .disabled(!prefs.isEdited(prefs.personality))
-                }
-            } header: {
-                Text("Personality")
-            } footer: {
-                Text("Each personality is a layered spec: identity, ranked values, rules for facts and honesty, anti-flattery rules, speaking style, memory and tool use, and examples. Edit any part; changes apply from the next conversation. You can also switch personality on the Talk screen.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Conversation history") {
-                LabeledContent("Obsidian vault") {
-                    Text(Vault.url.path).font(.caption).textSelection(.enabled).lineLimit(2)
-                }
-                HStack {
-                    Button("Open vault in Obsidian") { Vault.open(Vault.indexURL) }
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Vault.indexURL]) }
-                }
-            }
-            Section("Model") {
-                LabeledContent("Python", value: model.pythonPath)
-                LabeledContent("Models", value: "\(prefs.brain.rawValue.split(separator: "/").last ?? "") · parakeet-tdt-0.6b-v2 · Kokoro-82M · offline · 127.0.0.1 only")
-                HStack {
-                    Button("Restart model") { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain) }
-                        .disabled(web.live)
-                    Button("Show log") { NSWorkspace.shared.open(ModelProcess.logURL) }
-                }
-            }
-        }
-        .formStyle(.grouped)
+        Label(text, systemImage: symbol)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(.quaternary.opacity(0.6), in: Capsule())
     }
 }

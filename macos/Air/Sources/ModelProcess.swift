@@ -110,6 +110,12 @@ final class ModelProcess: ObservableObject {
 
     func noteSessionsChanged() { sessionsChanged += 1 }
 
+    /// UI review without loading models (-AirDemo <state>).
+    func showDemoReady() {
+        state = .ready(port: 0)
+        status = "Ready"
+    }
+
     func restart(voice: String, persona: String, brain: Brain) {
         stop()
         start(voice: voice, persona: persona, brain: brain)
