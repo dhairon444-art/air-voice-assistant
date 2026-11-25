@@ -234,6 +234,7 @@ struct HistoryRow: View {
 }
 
 struct SessionDetail: View {
+    @Environment(\.airTheme) private var theme
     let note: SessionNote
     var body: some View {
         ScrollView {
@@ -267,7 +268,7 @@ struct SessionDetail: View {
                     }
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(theme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 let lines = note.transcript()
                 VStack(alignment: .leading, spacing: 10) {
@@ -283,7 +284,7 @@ struct SessionDetail: View {
                             Text(line.time).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                                 .frame(width: 40, alignment: .trailing)
                             Text(line.speaker).font(.callout.weight(.semibold))
-                                .foregroundStyle(line.speaker == "You" ? Color.secondary : Color.accentColor)
+                                .foregroundStyle(line.speaker == "You" ? Color.secondary : theme.accent)
                                 .frame(width: 34, alignment: .leading)
                             Text(line.text).textSelection(.enabled)
                         }

@@ -4,11 +4,12 @@ import EventKit
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, voice, personality, brain, online, privacy, memory
+    case general, appearance, voice, personality, brain, online, privacy, memory
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: return "General"
+        case .appearance: return "Appearance"
         case .voice: return "Voice"
         case .personality: return "Personality"
         case .brain: return "Brain"
@@ -20,6 +21,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .appearance: return "paintpalette"
         case .voice: return "waveform"
         case .personality: return "person.crop.circle"
         case .brain: return "cpu"
@@ -48,6 +50,7 @@ struct SettingsView: View {
             Group {
                 switch nav.tab {
                 case .general: GeneralSettings()
+                case .appearance: AppearanceSettings()
                 case .voice: VoiceSettings()
                 case .personality: PersonalitySettings()
                 case .brain: BrainSettings()
@@ -63,6 +66,65 @@ struct SettingsView: View {
     }
 }
 
+struct AppearanceSettings: View {
+    @AppStorage("airTheme") private var themeID = AirTheme.aurora.rawValue
+    @AppStorage("airAppearanceMode") private var mode = AppearanceMode.system.rawValue
+    var body: some View {
+        Form {
+            Section {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(AirTheme.allCases) { t in
+                        ThemeCard(theme: t, selected: themeID == t.rawValue) { themeID = t.rawValue }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            } header: {
+                Text("Theme")
+            } footer: {
+                Text("Colours the orb, buttons and logo. The Dock icon follows the theme while Air is open.")
+            }
+            Section("Light and dark") {
+                Picker("Appearance", selection: $mode) {
+                    ForEach(AppearanceMode.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: mode) { _, _ in AppearanceMode.apply() }
+            }
+        }
+    }
+}
+
+struct ThemeCard: View {
+    let theme: AirTheme
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                AirLogo(size: 84).environment(\.airTheme, theme)
+                Text(theme.name).font(.headline)
+                Text(theme.blurb).font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 4) {
+                    ForEach(Array(theme.colors.enumerated()), id: \.offset) { _, c in
+                        Circle().fill(c).frame(width: 12, height: 12)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(width: 150)
+            .background(selected ? theme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(selected ? theme.accent : Color.secondary.opacity(0.25), lineWidth: selected ? 2 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(theme.name) theme")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 struct GeneralSettings: View {
     @EnvironmentObject var prefs: Prefs
     @EnvironmentObject var model: ModelProcess
@@ -71,6 +133,15 @@ struct GeneralSettings: View {
             Section("Quick access") {
                 Toggle("Global shortcut ⌃⌥Space to talk to Aria", isOn: $prefs.globalHotkey)
                 Toggle("Show Air in the menu bar", isOn: $prefs.menuBarIcon)
+            }
+            Section {
+                HStack(spacing: 14) {
+                    AirLogo(size: 64)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Air").font(.title2.weight(.semibold))
+                        Text("Aria, a private voice assistant that runs on this Mac.").foregroundStyle(.secondary)
+                    }
+                }
             }
             Section("Keyboard") {
                 ShortcutRow(keys: "Space", action: "Start talking · end your turn · interrupt Aria")

@@ -31,7 +31,10 @@ cp "$HERE/Resources/personas.json" "$APP/Contents/Resources/personas.json"
 echo "==> Icon"
 ICONSET="$BUILD/AppIcon.iconset"
 rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-xcrun swift "$HERE/make_icon.swift" "$BUILD/icon_1024.png"
+mkdir -p "$BUILD/iconsrc" && cp "$HERE/make_icon.swift" "$BUILD/iconsrc/main.swift"
+xcrun swiftc -O -target arm64-apple-macos14.0 -o "$BUILD/make_icon" "$BUILD/iconsrc/main.swift" "$HERE/Sources/Theme.swift" \
+  -framework AppKit -framework SwiftUI
+"$BUILD/make_icon" "$BUILD/icon_1024.png" aurora
 for s in 16 32 128 256 512; do
   sips -z $s $s "$BUILD/icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
   d=$((s * 2))

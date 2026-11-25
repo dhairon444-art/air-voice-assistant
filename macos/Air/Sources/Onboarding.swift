@@ -4,6 +4,7 @@ import SwiftUI
 
 /// First-launch welcome: microphone and headphones, voice and personality, optional permissions.
 struct OnboardingView: View {
+    @Environment(\.airTheme) private var theme
     @EnvironmentObject var prefs: Prefs
     @EnvironmentObject var ui: UIState
     @State private var step = 0
@@ -15,7 +16,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ForEach(0..<3) { i in
-                    Capsule().fill(i <= step ? Color.accentColor : Color.secondary.opacity(0.25)).frame(width: 28, height: 4)
+                    Capsule().fill(i <= step ? theme.accent : Color.secondary.opacity(0.25)).frame(width: 28, height: 4)
                 }
             }
             .padding(.top, 20)
@@ -48,13 +49,13 @@ struct OnboardingView: View {
 
     private var micStep: some View {
         VStack(spacing: 16) {
-            OrbView(state: .idle, mic: 0, out: 0).frame(width: 110, height: 110).accessibilityHidden(true)
+            AirLogo(size: 132).accessibilityHidden(true)
             Text("Meet Aria").font(.largeTitle.weight(.semibold))
             Text("A voice assistant that runs entirely on this Mac. Talk naturally, pause when you're done, and interrupt her any time.")
                 .multilineTextAlignment(.center).foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Image(systemName: mic == .authorized ? "checkmark.circle.fill" : "mic.circle")
-                    .font(.title).foregroundStyle(mic == .authorized ? Color.green : Color.accentColor)
+                    .font(.title).foregroundStyle(mic == .authorized ? Color.green : theme.accent)
                 VStack(alignment: .leading) {
                     Text("Microphone").font(.headline)
                     Text(mic == .authorized ? "Allowed. Thank you." : "Needed so Aria can hear you.").foregroundStyle(.secondary)
@@ -89,7 +90,7 @@ struct OnboardingView: View {
                     HStack(spacing: 4) {
                         Button(v.name) { prefs.voice = v.id }
                             .buttonStyle(.bordered)
-                            .tint(prefs.voice == v.id ? .accentColor : nil)
+                            .tint(prefs.voice == v.id ? theme.accent : nil)
                             .accessibilityAddTraits(prefs.voice == v.id ? .isSelected : [])
                         PreviewButton(voice: v.id)
                     }
@@ -124,7 +125,7 @@ struct OnboardingView: View {
 
     private func permission(_ title: String, _ symbol: String, _ granted: Bool, _ ask: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol).font(.title2).foregroundStyle(Color.accentColor).frame(width: 30)
+            Image(systemName: symbol).font(.title2).foregroundStyle(theme.accent).frame(width: 30)
             Text(title).font(.headline)
             Spacer()
             if granted {

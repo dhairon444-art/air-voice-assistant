@@ -21,7 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         installSignalHandlers()
-        applyAppearanceOverride()
+        AppearanceMode.apply()
+        IconArt.applyDockIcon()
         ScreenLook.startTracking()
         web.onSessionEnded = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
@@ -31,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         prefs.onUIPrefsChanged = { [weak self] in self?.applyQuickAccess() }
 
         let root = ContentView()
+            .airThemed()
             .environmentObject(model).environmentObject(web).environmentObject(prefs).environmentObject(ui)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -82,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func showSettings(_ tab: SettingsTab) {
         settingsNav.tab = tab
         if settingsWindow == nil {
-            let view = SettingsView()
+            let view = SettingsView().airThemed()
                 .environmentObject(settingsNav).environmentObject(prefs).environmentObject(model).environmentObject(web)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -210,15 +212,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: misc
-
-    /// -AirAppearance light|dark (for screenshots); otherwise follow the system.
-    private func applyAppearanceOverride() {
-        switch UserDefaults.standard.string(forKey: "AirAppearance") {
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-        default: break
-        }
-    }
 
     /// `kill <pid>` / logout: stop the child before exiting.
     private func installSignalHandlers() {

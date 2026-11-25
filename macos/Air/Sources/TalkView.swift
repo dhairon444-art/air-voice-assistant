@@ -57,6 +57,7 @@ struct TalkView: View {
 // MARK: Top bar: personality, voice, status chips
 
 struct TalkTopBar: View {
+    @Environment(\.airTheme) private var theme
     @EnvironmentObject var web: WebController
     @EnvironmentObject var prefs: Prefs
     @State private var showPersona = false
@@ -80,7 +81,7 @@ struct TalkTopBar: View {
                 }
             }
             StatusChip(symbol: "brain.head.profile", text: "Show thinking",
-                       tint: prefs.showThinking ? .accentColor : nil,
+                       tint: prefs.showThinking ? theme.accent : nil,
                        help: prefs.showThinking ? "Showing Aria's reasoning and activity. Click to hide."
                                                 : "Show Aria's reasoning and activity (what she heard, tools, searches, sources).") {
                 prefs.showThinking.toggle()
@@ -182,6 +183,7 @@ struct VoicePopover: View {
 }
 
 struct PreviewButton: View {
+    @Environment(\.airTheme) private var theme
     @EnvironmentObject var web: WebController
     let voice: String
     var body: some View {
@@ -189,7 +191,7 @@ struct PreviewButton: View {
             Image(systemName: web.previewing == voice ? "stop.circle.fill" : "play.circle.fill")
                 .font(.title3)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(theme.accent)
         }
         .buttonStyle(.plain)
         .disabled(!web.engineReady || web.live)
@@ -199,6 +201,7 @@ struct PreviewButton: View {
 }
 
 struct ChoiceRow: View {
+    @Environment(\.airTheme) private var theme
     let title: String
     let subtitle: String
     let selected: Bool
@@ -207,7 +210,7 @@ struct ChoiceRow: View {
         Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "checkmark").font(.caption.weight(.bold))
-                    .foregroundStyle(Color.accentColor).opacity(selected ? 1 : 0)
+                    .foregroundStyle(theme.accent).opacity(selected ? 1 : 0)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).fontWeight(selected ? .semibold : .regular)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
@@ -369,6 +372,7 @@ struct TraceRow: View {
 /// A calm orb: breathes when idle, follows your voice while listening, swirls while thinking,
 /// orbits while checking online, and pulses with Aria's voice while she speaks.
 struct OrbView: View {
+    @Environment(\.airTheme) private var theme
     let state: TalkState
     let mic: Double
     let out: Double
@@ -378,9 +382,9 @@ struct OrbView: View {
         switch state {
         case .checking: return .teal
         case .working: return .orange
-        case .speaking: return .accentColor
+        case .speaking: return theme.accent
         case .thinking: return .purple
-        default: return .accentColor
+        default: return theme.accent
         }
     }
 
@@ -413,10 +417,24 @@ struct OrbView: View {
                     if j == 0 { core.move(to: p) } else { core.addLine(to: p) }
                 }
                 core.closeSubpath()
-                g.fill(core, with: .radialGradient(
-                    Gradient(colors: [tint.opacity(0.55), tint, tint.opacity(0.85)]),
-                    center: CGPoint(x: c.x - base * 0.35, y: c.y - base * 0.4),
-                    startRadius: 0, endRadius: base * 1.6))
+                let semantic = state == .thinking || state == .checking || state == .working
+                if semantic {
+                    g.fill(core, with: .radialGradient(
+                        Gradient(colors: [tint.opacity(0.55), tint, tint.opacity(0.85)]),
+                        center: CGPoint(x: c.x - base * 0.35, y: c.y - base * 0.4),
+                        startRadius: 0, endRadius: base * 1.6))
+                } else {
+                    // The theme's gradient, slowly turning, with a soft glass highlight.
+                    let spin = reduceMotion ? 0 : t * 0.25
+                    let d = CGPoint(x: cos(spin) * base, y: sin(spin) * base)
+                    g.fill(core, with: .linearGradient(Gradient(colors: theme.colors),
+                                                       startPoint: CGPoint(x: c.x - d.x, y: c.y - d.y),
+                                                       endPoint: CGPoint(x: c.x + d.x, y: c.y + d.y)))
+                    g.fill(core, with: .radialGradient(
+                        Gradient(colors: [.white.opacity(0.38), .white.opacity(0)]),
+                        center: CGPoint(x: c.x - base * 0.35, y: c.y - base * 0.42),
+                        startRadius: 0, endRadius: base * 1.1))
+                }
                 // thinking: rotating arc; checking: orbiting dot
                 if state == .thinking || state == .connecting {
                     let r = base * 1.22
@@ -470,6 +488,7 @@ struct CaptionsView: View {
 }
 
 struct TurnView: View {
+    @Environment(\.airTheme) private var theme
     let turn: Turn
     var body: some View {
         if turn.speaker == .you {
@@ -478,13 +497,13 @@ struct TurnView: View {
                 Text(turn.text)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .accessibilityLabel("You said: \(turn.text)")
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "sparkle").foregroundStyle(Color.accentColor).padding(.top, 3)
+                    Image(systemName: "sparkle").foregroundStyle(theme.accent).padding(.top, 3)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(turn.text.trimmingCharacters(in: .whitespaces))
@@ -552,6 +571,7 @@ struct FileRow: View {
 // MARK: Tool confirmation
 
 struct ConfirmCardView: View {
+    @Environment(\.airTheme) private var theme
     @EnvironmentObject var web: WebController
     let card: ConfirmCard
     var body: some View {
@@ -559,7 +579,7 @@ struct ConfirmCardView: View {
             Image(systemName: "hand.raised.circle.fill")
                 .font(.system(size: 30))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(theme.accent)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Aria wants to").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -577,7 +597,7 @@ struct ConfirmCardView: View {
         .controlSize(.large)
         .padding(16)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.accentColor.opacity(0.35)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(theme.accent.opacity(0.35)))
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Confirmation needed: Aria wants to \(card.text)")
@@ -591,6 +611,7 @@ extension String {
 // MARK: Controls
 
 struct ControlBar: View {
+    @Environment(\.airTheme) private var theme
     @EnvironmentObject var web: WebController
     var body: some View {
         HStack(spacing: 16) {
@@ -606,8 +627,8 @@ struct ControlBar: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 58, height: 58)
-                    .background(web.live ? Color.red.gradient : Color.accentColor.gradient, in: Circle())
-                    .shadow(color: (web.live ? Color.red : Color.accentColor).opacity(0.35), radius: 8, y: 3)
+                    .background(web.live ? Color.red.gradient : theme.accent.gradient, in: Circle())
+                    .shadow(color: (web.live ? Color.red : theme.accent).opacity(0.35), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
             .disabled(!web.engineReady || web.state == .connecting)
