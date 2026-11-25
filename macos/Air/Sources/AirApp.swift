@@ -81,6 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Close any sheet or open panel first so nothing can veto quitting.
+        for w in NSApp.windows { if let sheet = w.attachedSheet { w.endSheet(sheet) } }
+        if NSApp.modalWindow != nil { NSApp.abortModal() }
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         web.webView.evaluateJavaScript("window.airStop && window.airStop()")
         model.stop()
@@ -242,7 +249,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-            src.setEventHandler { NSApp.terminate(nil) }
+            src.setEventHandler { [weak self] in
+                NSApp.terminate(nil)
+                // If something (a modal sheet or panel) holds up termination, don't hang: stop the
+                // engine and exit anyway, and leave a note for diagnosis.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    FileHandle.standardError.write(Data("Air: terminate stalled (modal: \(NSApp.modalWindow?.title ?? "none"), windows: \(NSApp.windows.filter(\.isVisible).map { $0.title + ":" + String(describing: type(of: $0)) }))\n".utf8))
+                    self?.model.stop()
+                    exit(0)
+                }
+            }
             src.resume()
             signalSources.append(src)
         }

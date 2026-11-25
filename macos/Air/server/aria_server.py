@@ -638,6 +638,7 @@ def main() -> None:
         RESEARCH_ASK = re.compile(r"^\W*(please\s+)?(can you\s+|could you\s+)?(do (a |some )?(deep |quick )?research|research|"
                                   r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
 
+        SWITCH_ASK = re.compile(r"\b(switch|change|swap)\s+(to|into|personality|your personality)\b|\bbe (the|my) \w+ (now|instead)\b", re.I)
         BROWSER_ASK = re.compile(r"\b(my )?(browser|tabs?|safari|chrome|tabbit|arc)\b", re.I)
         NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
 
@@ -680,6 +681,9 @@ def main() -> None:
             if args.tools and BROWSER_ASK.search(text_):
                 hint = ("(This is about the user's browser: call read_browser_tabs first, then read_page on a tab "
                         "if needed. It needs no Screen Recording.) " + hint).strip()
+            if args.tools and SWITCH_ASK.search(text_):
+                hint = ("(The user wants a different personality: call switch_personality with the name they said.) "
+                        + hint).strip()
             if args.tools and OWN_DOC.search(text_):
                 hint = ("(This is about the user's own document on this Mac: find it with find_files and read it "
                         "with read_file, then answer.) " + hint).strip()
@@ -1104,6 +1108,14 @@ def main() -> None:
                             recorder.personality = name_
                             lang["code"] = persona_language(new)
                             gpu_jobs.put(lambda: use_stt(MULTILINGUAL_STT if lang["code"] != "en" else args.stt))
+
+                            def reprime():
+                                # Re-prime now, in the background, so the next reply doesn't pay for it.
+                                if st["busy"]:
+                                    return
+                                prime(messages)
+                                st["cache_tokens"] = shared["tokens"]
+                            gpu_jobs.put(reprime)
                             st["announce"] = name_
                             emit("STATUS", f"personality switched to {name_}")
                             trace("personality", f"Personality: {name_}")

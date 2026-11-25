@@ -326,7 +326,7 @@ def refusal_phrase(text: str) -> str | None:
     return m.group(0) if m else None
 
 
-ACTION_TOOLS = NEEDS_CONFIRMATION | {"open_app", "switch_to_app", "open_file", "reveal_in_finder", "music_control",
+ACTION_TOOLS = NEEDS_CONFIRMATION | {"switch_personality", "open_app", "switch_to_app", "open_file", "reveal_in_finder", "music_control",
                                      "open_url", "web_search_and_open", "open_source", "save_as"}
 
 _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment|one moment|give me a (moment|second)|"
@@ -390,7 +390,7 @@ _CLAIM = re.compile(
 _CLAIM2 = re.compile(
     r"\b(it'?s|it is|that'?s|they'?re|they are) (been )?(added|saved|set|scheduled|created|sent|deleted|moved)\b|"
     r"\byou'?ll (now )?(find|see) (it|them) in your (reminders|calendar|notes|vault|mail|messages)\b|"
-    r"^\W*(done|all set|all done)\W*$", re.I)
+    r"^\W*(done|all set|all done)\W*$|^\W*switch(ed|ing) (to|into)\b", re.I)
 
 
 def claims_action(text: str) -> bool:
