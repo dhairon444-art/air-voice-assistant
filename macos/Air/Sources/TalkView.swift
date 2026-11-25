@@ -155,6 +155,15 @@ struct PersonalityPopover: View {
             ChoiceRow(title: "Custom", subtitle: "Your own text", selected: prefs.personality == Personas.customID) {
                 prefs.personality = Personas.customID
             }
+            if prefs.personality == "freespirit" && prefs.voice != "af_bella" {
+                HStack {
+                    Label("Bella is the most expressive voice for Free Spirit.", systemImage: "waveform")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Use Bella") { prefs.voice = "af_bella" }.controlSize(.small)
+                }
+                .padding(.top, 4)
+            }
             Divider().padding(.vertical, 4)
             Button("Edit personalities…") { AppActions.openSettings(.personality) }
                 .buttonStyle(.link)
