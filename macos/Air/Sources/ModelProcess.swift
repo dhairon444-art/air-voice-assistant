@@ -19,6 +19,15 @@ final class ModelProcess: ObservableObject {
     @Published private(set) var status: String = "Starting…"
     @Published private(set) var recentLog: [String] = []
     @Published private(set) var startedAt = Date()
+    /// Real loading progress from the engine: completed fraction, current step, when it began and its estimate.
+    @Published private(set) var progress = Progress()
+    struct Progress: Equatable {
+        var fraction = 0.0
+        var next = 0.02
+        var label = "Starting…"
+        var since = Date()
+        var estimate = 3.0
+    }
     /// Bumped whenever the server saves a session note.
     @Published private(set) var sessionsChanged = 0
 
@@ -104,6 +113,7 @@ final class ModelProcess: ObservableObject {
         stdinPipe = input
         state = .starting
         status = "Starting Python…"
+        progress = Progress()
         startedAt = Date()
         recentLog = []
     }
@@ -111,6 +121,25 @@ final class ModelProcess: ObservableObject {
     func noteSessionsChanged() { sessionsChanged += 1 }
 
     /// UI review without loading models (-AirDemo <state>).
+    /// Recordings only: replay the engine's real loading stages (same fractions and labels) over ~9 s.
+    func demoLoading(then done: @escaping () -> Void) {
+        state = .starting
+        startedAt = Date()
+        let stages: [(Double, Double, String, Double)] = [
+            (0.0, 0.02, "Starting the engine", 0.6), (0.6, 0.06, "Loading speech recognition", 0.9),
+            (1.5, 0.14, "Loading the voice", 0.6), (2.1, 0.20, "Loading the language model", 2.4),
+            (4.5, 0.40, "Warming up", 1.0), (5.5, 0.50, "Preparing your personality and memory", 3.2),
+            (8.7, 1.00, "Ready", 0.1)]
+        let stops: [Double] = [0.02, 0.06, 0.14, 0.20, 0.40, 0.50, 1.0]
+        for (at, frac, label, est) in stages {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) {
+                self.progress = Progress(fraction: frac, next: stops.first { $0 > frac + 0.001 } ?? 1.0,
+                                         label: label, since: Date(), estimate: est)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 9.6) { self.showDemoReady(); done() }
+    }
+
     func showDemoReady() {
         state = .ready(port: 0)
         status = "Ready"
@@ -168,7 +197,14 @@ final class ModelProcess: ObservableObject {
         guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         recentLog.append(line)
         if recentLog.count > 40 { recentLog.removeFirst(recentLog.count - 40) }
-        if line.hasPrefix("AIR_STATUS ") {
+        if line.hasPrefix("AIR_PROGRESS ") {
+            let f = line.dropFirst("AIR_PROGRESS ".count).split(separator: "|", maxSplits: 2).map(String.init)
+            if f.count == 3, let frac = Double(f[0]) {
+                let nextStops: [Double] = [0.02, 0.06, 0.14, 0.20, 0.40, 0.50, 1.0]
+                progress = Progress(fraction: frac, next: nextStops.first { $0 > frac + 0.001 } ?? 1.0,
+                                    label: f[1], since: Date(), estimate: max(1, Double(f[2]) ?? 3))
+            }
+        } else if line.hasPrefix("AIR_STATUS ") {
             let s = String(line.dropFirst("AIR_STATUS ".count))
             if case .starting = state { status = s }
         } else if line.hasPrefix("AIR_READY "), let port = Int(line.dropFirst("AIR_READY ".count)) {

@@ -62,7 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if UserDefaults.standard.bool(forKey: "AirIslandDemo") { island?.demo = true; island?.refresh() }
 
         let args = UserDefaults.standard
-        if let demo = args.string(forKey: "AirDemo") {
+        if args.string(forKey: "AirDemo") == "loading" {
+            model.demoLoading { [weak self] in self?.web.loadDemo("idle") }
+        } else if let demo = args.string(forKey: "AirDemo") {
             web.loadDemo(demo)
             model.showDemoReady()
         } else {

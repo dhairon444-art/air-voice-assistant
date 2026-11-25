@@ -223,6 +223,7 @@ def main() -> None:
     vault = Path(args.vault)
     ensure_vault(vault)
 
+    emit("PROGRESS", "0.02|Starting the engine|3")
     emit("STATUS", "Starting MLX")
     import aiohttp
     from aiohttp import web
@@ -242,18 +243,22 @@ def main() -> None:
         sys.exit(2)
 
     t0 = time.time()
+    emit("PROGRESS", "0.06|Loading speech recognition|4")
     emit("STATUS", "Loading speech recognition (Parakeet)")
     from mlx_audio.stt.utils import load as load_stt
     speech = {"stt": load_stt(args.stt), "id": args.stt}
+    emit("PROGRESS", "0.14|Loading the voice|2")
     emit("STATUS", "Loading voice (Kokoro)")
     from mlx_audio.tts.utils import load_model as load_tts
     tts = load_tts(args.tts)
+    emit("PROGRESS", f"0.20|Loading the language model|{8 if 'Instruct-2507' in args.llm else 14}")
     emit("STATUS", f"Loading language model ({args.llm.split('/')[-1]})")
     from mlx_lm import load as load_lm, stream_generate
     from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache
     from mlx_lm.sample_utils import make_sampler
     lm, tokenizer = load_lm(args.llm)
 
+    emit("PROGRESS", "0.40|Warming up|4")
     emit("STATUS", f"Warming up (loaded in {time.time() - t0:.0f}s)")
     tw = time.time()
     rng = np.random.default_rng(0)
@@ -362,8 +367,25 @@ def main() -> None:
 
     t_prime = time.time()
     last_persona = {"text": args.text_prompt.strip() or DEFAULT_PERSONA}
-    prime(build_messages(last_persona["text"]))
-    emit("STATUS", f"System prompt primed ({len(shared['tokens'])} tokens) in {time.time() - t_prime:.1f}s")
+    # The longest step: estimate it from the speed measured on this Mac last time (honest, not faked).
+    rate_file = Path.home() / "Library/Application Support/Air/prime_rate.json"
+    try:
+        rate = float(json.loads(rate_file.read_text()).get(args.llm, 250.0))
+    except Exception:
+        rate = 250.0
+    msgs0 = build_messages(last_persona["text"])
+    n_tok = len(tokenizer.apply_chat_template(msgs0, tools=TOOLS if args.tools else None, tokenize=True))
+    emit("PROGRESS", f"0.50|Preparing your personality and memory|{n_tok / max(rate, 1):.0f}")
+    prime(msgs0)
+    dt_prime = time.time() - t_prime
+    try:
+        rates = json.loads(rate_file.read_text()) if rate_file.exists() else {}
+        rates[args.llm] = round(len(shared["tokens"]) / max(dt_prime, 0.1), 1)
+        rate_file.write_text(json.dumps(rates))
+    except Exception:
+        pass
+    emit("PROGRESS", "1.00|Ready|0")
+    emit("STATUS", f"System prompt primed ({len(shared['tokens'])} tokens) in {dt_prime:.1f}s")
     lock = asyncio.Lock()
     ui_dir = Path(args.ui_dir)
     # One thread owns all GPU (MLX) work; VAD runs on the CPU stream next to it.

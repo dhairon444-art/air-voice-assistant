@@ -27,6 +27,10 @@ struct Orb3DView: NSViewRepresentable {
     var tiny = false
     /// False holds a still frame (the Island does this while the main window, with its own orb, is visible).
     var animate = true
+    /// Startup: 0 = a scattered cloud of dots, 1 = the assembled sphere (tracks real loading progress).
+    var assembly = 1.0
+    /// A bigger canvas around the same-sized sphere (startup: room for the scattered cloud).
+    var extent = 1.0
     @Environment(\.airTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("airOrbSensitivity") private var sensitivity = 1.0
@@ -63,6 +67,8 @@ struct Orb3DView: NSViewRepresentable {
         let count = tiny ? 1200 : (density == "low" ? 12_000 : density == "high" ? 40_000 : 24_000)
         context.coordinator.build(count: count, tiny: tiny)
         context.coordinator.setShadow(on: shadowOn && !tiny, intensity: shadowIntensity, light: scheme == .light)
+        context.coordinator.assembly = assembly
+        context.coordinator.setExtent(extent)
         context.coordinator.configure(meter: meter, state: state, muted: muted, sensitivity: sensitivity, glow: glow,
                                       palette: palette == "theme" ? theme : nil, still: reduceMotion, live: animate)
     }
@@ -105,7 +111,9 @@ final class OrbAnimator: NSObject, SCNSceneRendererDelegate, @unchecked Sendable
         var listen = 0.0, think = 0.0, check = 0.0
         var muted = 0.0, motion = 1.0, glow = 0.6, light = 0.0
         var moonSpeed = 1.2
+        var assemble = 1.0
     }
+    private var first = true
     private var lock = os_unfair_lock()
     private var targets = Targets()
     private var cur = Targets()
@@ -117,7 +125,10 @@ final class OrbAnimator: NSObject, SCNSceneRendererDelegate, @unchecked Sendable
     static let noWrites = UserDefaults.standard.bool(forKey: "AirOrbNoWrites")  // diagnostics
 
     func set(_ t: Targets) {
-        os_unfair_lock_lock(&lock); targets = t; os_unfair_lock_unlock(&lock)
+        os_unfair_lock_lock(&lock)
+        targets = t
+        if first { cur = t; first = false }   // start where we are (no fly-in on a normal launch)
+        os_unfair_lock_unlock(&lock)
     }
 
     /// Critically damped spring: no overshoot, no jumps. omega sets how fast (rad/s).
@@ -141,11 +152,12 @@ final class OrbAnimator: NSObject, SCNSceneRendererDelegate, @unchecked Sendable
         spring(&cur.check, &vel.check, t.check, 6.0, dt)
         spring(&cur.muted, &vel.muted, t.muted, states, dt)
         spring(&cur.glow, &vel.glow, t.glow, states, dt)
+        spring(&cur.assemble, &vel.assemble, t.assemble, 3.5, dt)
         cur.motion = t.motion; cur.light = t.light; cur.moonSpeed = t.moonSpeed
         let b = cur.bands.map { max(0, $0) }
         let vals: [(String, SCNVector4)] = [
             ("b0", SCNVector4(b[0], b[1], b[2], b[3])), ("b1", SCNVector4(b[4], b[5], b[6], b[7])),
-            ("s0", SCNVector4(max(0, cur.level), max(0, cur.loud), 0, 0)),
+            ("s0", SCNVector4(max(0, cur.level), max(0, cur.loud), min(1, max(0, cur.assemble)), 0)),
             ("s1", SCNVector4(min(1, max(0, cur.muted)), cur.motion, cur.glow, cur.light)),
             ("m0", SCNVector4(min(1, max(0, cur.listen)), min(1, max(0, cur.think)), min(1, max(0, cur.check)), cur.moonSpeed)),
         ]
@@ -166,6 +178,7 @@ final class OrbScene {
     private var built = (count: 0, tiny: false)
     private var lastPalette: [SIMD3<Double>] = []
     private var coreHideWork: DispatchWorkItem?
+    var assembly = 1.0
     private var sub: AnyCancellable?
     private weak var meter: AudioMeter?
     private let halo = SCNNode()
@@ -261,6 +274,7 @@ final class OrbScene {
         t.motion = still ? 0 : 1
         t.glow = cfg.glow
         t.light = shadowCfg.light ? 1 : 0
+        t.assemble = still ? 1 : assembly
         animator.set(t)
 
         let pal: [SIMD3<Double>]
@@ -285,6 +299,10 @@ final class OrbScene {
         if mutedNow || still { holder.removeAction(forKey: "spin") } else if holder.action(forKey: "spin") == nil {
             holder.runAction(.repeatForever(.rotateBy(x: 0, y: .pi * 2, z: 0, duration: 48)), forKey: "spin")
         }
+    }
+
+    func setExtent(_ e: Double) {
+        scene.rootNode.childNodes.first { $0.camera != nil }?.position = SCNVector3(0, 0, 6.2 * e)
     }
 
     func setShadow(on: Bool, intensity: Double, light: Bool) {
@@ -433,6 +451,13 @@ final class OrbScene {
     float3 M = float3(cos(aM) * 1.32, sin(aM) * 0.42, sin(aM) * 1.2);
     float ce = smoothstep(0.0, 1.0, clamp(cm * 1.5 - sd.x * 0.5, 0.0, 1.0));
     pos = mix(pos, M + p * (0.2 + 0.06 * sd.y), ce);
+    // STARTUP: a faint scattered cloud that gathers into the sphere as loading progresses.
+    float asmb = s0.z;
+    float3 rnd = normalize(float3(sin(sd.x * 91.7 + sd.y * 13.1), cos(sd.y * 57.3 + sd.x * 7.9), sin(sd.x * 33.3 - sd.y * 71.9)) + float3(0.001));
+    float far = 1.5 + 1.9 * fract(sd.x * 7.31 + sd.y * 3.17);
+    float3 scattered = rnd * far + float3(sin(t * 0.3 + sd.y * 6.0), cos(t * 0.25 + sd.x * 6.0), 0.0) * 0.12;
+    float gath = smoothstep(0.0, 1.0, clamp(asmb * 1.4 - sd.y * 0.4, 0.0, 1.0));
+    pos = mix(scattered, pos, gath);
     _geometry.position.xyz = pos;
     float h = clamp(1.0 - lat + 0.08 * loud * sin(t + sd.y * 6.28) + tm * 0.18 * sin(t * 0.3 + p.x * 2.0), 0.0, 1.0) * 4.0;
     float3 c = h < 1.0 ? mix(p0, p1, h) : h < 2.0 ? mix(p1, p2, h - 1.0) : h < 3.0 ? mix(p2, p3, h - 2.0) : mix(p3, p4, h - 3.0);
@@ -446,6 +471,7 @@ final class OrbScene {
     bright *= 1.0 + spark * 6.0;
     // The moon shines brighter than anything else.
     bright = mix(bright, 0.035 + 0.06 * sd.y * sd.y + 0.12 * rim, ce);   // many dots overlap there: keep each dim
+    bright *= mix(0.3, 1.0, gath);
     float grey = dot(c, float3(0.3, 0.59, 0.11));
     c = mix(float3(grey), c, clamp(1.15 + 0.4 * loud, 0.0, 1.6) * (1.0 - 0.85 * muted));
     bright *= (1.0 - 0.55 * muted);

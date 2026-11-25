@@ -95,23 +95,58 @@ struct ContentView: View {
 
 struct LoadingView: View {
     @EnvironmentObject var model: ModelProcess
+    @EnvironmentObject var web: WebController
+
     var body: some View {
-        VStack(spacing: 16) {
-            OrbView(state: .connecting, mic: 0, out: 0)
-                .frame(width: 120, height: 120)
-                .accessibilityHidden(true)
-            Text("Aria is waking up").font(.title2.weight(.semibold))
-            Text(model.status).foregroundStyle(.secondary).contentTransition(.opacity)
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text("\(Int(ctx.date.timeIntervalSince(model.startedAt))) s · usually 15 to 30 s")
-                    .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
+        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+            let p = model.progress
+            let elapsed = ctx.date.timeIntervalSince(p.since)
+            // Within a step, move toward the next stop by its own estimate; never claim more than 95% of it.
+            let frac = min(1, p.fraction + (p.next - p.fraction) * min(0.95, elapsed / p.estimate))
+            let stalled = elapsed > p.estimate * 1.8 + 6
+            let total = ctx.date.timeIntervalSince(model.startedAt)
+            VStack(spacing: 0) {
+                Orb3DView(state: .idle, meter: web.meter, assembly: frac, extent: 420.0 / 220.0)
+                    .frame(width: 420, height: 420)
+                    .padding(.top, -60)
+                    .padding(.bottom, -100)
+                    .accessibilityHidden(true)
+                VStack(spacing: 10) {
+                    Text("Aria is waking up").font(.title3.weight(.semibold))
+                    ProgressBar(value: frac).frame(width: 260, height: 4)
+                    Text(stalled ? "Still \(p.label.lowercased())… this can take longer when memory is busy."
+                                 : "\(p.label)… \(Int(frac * 100))%")
+                        .font(.callout).foregroundStyle(stalled ? .orange : .secondary)
+                        .contentTransition(.numericText())
+                    if total > 4, frac > 0.12, frac < 0.98 {
+                        let left = max(1, total / frac * (1 - frac))
+                        Text("about \(Int(left.rounded())) s left").font(.caption).foregroundStyle(.tertiary).monospacedDigit()
+                    }
+                }
+                .padding(.top, 24)
+                Spacer()
+                Label("Everything runs on this Mac.", systemImage: "lock.shield")
+                    .font(.callout).foregroundStyle(.secondary).padding(.bottom, 28)
             }
-            Label("Everything runs on this Mac.", systemImage: "lock.shield")
-                .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Aria is loading: \(p.label), \(Int(frac * 100)) percent")
         }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A slim, rounded progress bar in the theme's colours.
+struct ProgressBar: View {
+    let value: Double
+    @Environment(\.airTheme) private var theme
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.18))
+                Capsule().fill(LinearGradient(colors: theme.colors, startPoint: .leading, endPoint: .trailing))
+                    .frame(width: max(4, g.size.width * value))
+            }
+        }
     }
 }
 
