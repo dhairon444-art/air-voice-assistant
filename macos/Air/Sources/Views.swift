@@ -342,9 +342,8 @@ struct LiveToggle: View {
         Button { web.toggle() } label: {
             HStack(spacing: 6) {
                 if web.live {
+                    // A steady dot: a forever-repeating pulse costs ~3% CPU in a window that's always on screen.
                     Circle().fill(tint).frame(width: 8, height: 8)
-                        .opacity(pulse ? 0.35 : 1)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
                 } else {
                     Image(systemName: connecting ? "ellipsis" : "mic.fill").font(.caption)
                 }
