@@ -25,13 +25,13 @@ struct MarketplaceView: View {
     @State private var importURL = ""
     @State private var showImportURL = false
 
-    static let categories = ["Learning & Teaching", "Research & Analysis", "Business & Marketing", "Career",
+    static let categories = ["Professionals", "Learning & Teaching", "Research & Analysis", "Business & Marketing", "Career",
                              "Writing & Creative", "Coaching & Wellbeing", "Spiritual & Astrology", "Tech & Code",
-                             "Fun & Characters", "Languages", "Debate & Critical thinking", "Skills", "Mine"]
+                             "Languages", "Debate & Critical thinking", "Skills", "Mine", "Fun & Characters"]
 
     private var builtIns: [CatalogItem] {
         Personas.presets.map { p in
-            CatalogItem(id: p.id, kind: "personality", name: p.name, emoji: "⭐️", summary: p.summary, category: "Built-in",
+            CatalogItem(id: p.id, kind: "personality", name: p.name, emoji: ProSpecs.spec(p.id)?.emoji ?? "⭐️", summary: p.summary, category: "Built-in",
                         tags: ["built-in"], tone: p.id == "freespirit" ? "emotional" : (p.id == "sparring" ? "blunt" : "objective"),
                         honesty: "factual", length: "concise", uses_web: true, voice: p.id == "freespirit" ? "af_bella" : "af_heart",
                         popularity: 10_000, original: p.text, removed: [], layered: p.text,
@@ -83,7 +83,12 @@ struct MarketplaceView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if section == .all && query.isEmpty && !filtersActive {
-                            row(title: "Featured", items: builtIns + market.catalog.filter { !$0.isSkill }.sorted { $0.popularity > $1.popularity }.prefix(6))
+                            let pinned = market.all.filter { market.favourites.contains($0.id) }
+                            if !pinned.isEmpty { row(title: "Pinned", items: pinned) }
+                            let recent = market.recentlyUsed
+                            if !recent.isEmpty { row(title: "Recently used", items: recent) }
+                            row(title: "Professionals", items: market.professionals.sorted { $0.popularity > $1.popularity }.prefix(10))
+                            row(title: "Air's own", items: builtIns)
                             let rec = market.recommended()
                             if !rec.isEmpty { row(title: "Recommended for you", items: rec) }
                         }
@@ -133,7 +138,7 @@ struct MarketplaceView: View {
                     HStack {
                         Text(c)
                         Spacer()
-                        Text("\(c == "Mine" ? market.custom.count : market.catalog.filter { $0.category == c }.count)")
+                        Text("\(c == "Mine" ? market.custom.count : (c == "Professionals" ? market.professionals.count : market.catalog.filter { $0.category == c }.count))")
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     }
                     .tag(Section.category(c))
@@ -341,9 +346,14 @@ struct MarketDetail: View {
                             }
                         }
                         Button("Duplicate & Edit") {
-                            if builtIn {
-                                editing = market.saveCustom(name: item.name + " (my copy)", emoji: item.emoji, summary: item.summary,
-                                                            text: item.layered, voice: item.voice)
+                            if var sp = market.spec(item.id) {
+                                sp.id = "my-\(UUID().uuidString.prefix(8).lowercased())"
+                                sp.name += " (my copy)"
+                                sp.category = "Mine"
+                                sp.text = sp.compiled()
+                                market.specs[sp.id] = sp
+                                editing = market.saveCustom(name: sp.name, emoji: sp.emoji, summary: sp.role, text: sp.text ?? "",
+                                                            voice: sp.voice, replacing: sp.id)
                             } else {
                                 editing = market.duplicate(item.id)
                             }
@@ -373,12 +383,12 @@ struct MarketDetail: View {
                             }
                         }
                     }
-                    DisclosureGroup("Layered personality (what Aria uses)") {
+                    DisclosureGroup("Personality text (what Aria uses)") {
                         Text(market.text(for: item.id) ?? item.layered)
                             .font(.callout.monospaced()).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
                         if !builtIn && market.refined[item.id] == nil && !item.isSkill {
-                            Button("Refine with Aria's Model") { refine() }.disabled(!busy.isEmpty || !web.engineReady)
+                            Button("Adapt for Speech with Aria's Model") { refine() }.disabled(!busy.isEmpty || !web.engineReady)
                                 .help("Rewrites the converted text into Air's layers with the local model, in the background")
                         }
                     }
@@ -464,8 +474,8 @@ struct MarketDetail: View {
     }
 }
 
-/// Create a personality: describe it in words and let Aria's model draft the layers, or fill in
-/// the parts yourself.
+/// Create or edit a personality as its own character: describe it in a sentence and let Aria draft
+/// the fields, or fill them in. A live preview answers a test question before you save.
 struct PersonalityWizard: View {
     var editing: CatalogItem? = nil
     @ObservedObject private var market = Marketplace.shared
@@ -473,105 +483,154 @@ struct PersonalityWizard: View {
     @EnvironmentObject var web: WebController
     @Environment(\.dismiss) private var dismiss
 
-    @State private var name = ""
-    @State private var emoji = "✨"
-    @State private var purpose = ""
-    @State private var warmth = 0.5
-    @State private var directness = 0.6
-    @State private var playfulness = 0.3
-    @State private var values = "Truth, Usefulness, Comfort"
-    @State private var rules = ""
-    @State private var examples = ""
+    @State private var spec = PersonaSpec.blank()
     @State private var describe = ""
-    @State private var text = ""
-    @State private var voice = "af_heart"
-    @State private var busy = false
+    @State private var question = "Should I raise my freelance rates?"
+    @State private var preview = ""
+    @State private var busy = ""
+
+    private func list(_ v: Binding<[String]>) -> Binding<String> {
+        Binding(get: { v.wrappedValue.joined(separator: "\n") },
+                set: { v.wrappedValue = $0.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } })
+    }
+    private var example: Binding<String> {
+        Binding(get: { spec.examples.map { "User: \($0.first ?? "")\nAria: \($0.last ?? "")" }.joined(separator: "\n\n") },
+                set: { txt in
+                    var out: [[String]] = []
+                    for block in txt.components(separatedBy: "\n\n") {
+                        let u = block.components(separatedBy: "\n").first { $0.hasPrefix("User:") }?.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        let a = block.components(separatedBy: "\n").first { $0.hasPrefix("Aria:") }?.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if let u, let a { out.append([u, a]) }
+                    }
+                    spec.examples = out
+                })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section {
-                    TextField("Name", text: $name)
-                    TextField("Emoji", text: $emoji)
-                    TextField("Purpose (one line)", text: $purpose)
-                    Picker("Voice", selection: $voice) { ForEach(Voices.all, id: \.id) { Text($0.name).tag($0.id) } }
-                } header: { Text(editing == nil ? "New personality" : "Edit personality") }
-                Section("Describe it in your own words (optional)") {
-                    TextField("e.g. a calm astrology guide who explains charts simply and admits what's unproven", text: $describe, axis: .vertical)
-                        .lineLimit(2...4)
-                    HStack {
-                        Spacer()
-                        if busy { ProgressView().controlSize(.small) }
-                        Button("Draft the Layers with Aria") { draft() }.disabled(describe.isEmpty || busy || !web.engineReady)
+                Section("Simple mode") {
+                    HStack(alignment: .top) {
+                        TextField("Describe it in a sentence, e.g. a no-nonsense CRM expert who loves holdout tests",
+                                  text: $describe, axis: .vertical).lineLimit(1...3)
+                        Button("Draft") { draft() }.disabled(describe.isEmpty || !busy.isEmpty || !web.engineReady)
                     }
                 }
-                Section("Tone") {
-                    LabeledContent("Warmth") { Slider(value: $warmth) }
-                    LabeledContent("Directness") { Slider(value: $directness) }
-                    LabeledContent("Playfulness") { Slider(value: $playfulness) }
-                    TextField("Values, most important first", text: $values)
-                    TextField("Rules (one per line)", text: $rules, axis: .vertical).lineLimit(2...5)
-                    TextField("Example exchange (optional)", text: $examples, axis: .vertical).lineLimit(2...5)
-                    Button("Build Text from These") { text = compose() }
+                Section("Who") {
+                    HStack {
+                        TextField("Emoji", text: $spec.emoji).frame(width: 60)
+                        TextField("Name", text: $spec.name)
+                    }
+                    TextField("Role (one line)", text: $spec.role)
+                    TextField("Expertise", text: $spec.expertise)
+                    TextField("Focus topics (one per line)", text: list($spec.focus), axis: .vertical).lineLimit(1...4)
                 }
-                Section("Personality text") {
-                    TextEditor(text: $text).font(.callout.monospaced()).frame(minHeight: 140)
+                Section("Tone") {
+                    ToneSlider(label: "Casual ↔ Formal", value: $spec.tone.formal)
+                    ToneSlider(label: "Blunt ↔ Warm", value: $spec.tone.warmth)
+                    ToneSlider(label: "Concise ↔ Detailed", value: $spec.tone.detail)
+                    ToneSlider(label: "Cautious ↔ Bold", value: $spec.tone.bold)
+                    ToneSlider(label: "Serious ↔ Playful", value: $spec.tone.playful)
+                }
+                Section("Speaking style") {
+                    TextField("Sentence length (e.g. short, punchy)", text: $spec.sentences)
+                    TextField("Signature phrases (one per line)", text: list($spec.phrases), axis: .vertical).lineLimit(1...3)
+                    TextField("Frameworks it uses (one per line, e.g. SWOT, first principles)", text: list($spec.frameworks), axis: .vertical).lineLimit(1...4)
+                    Toggle("Asks questions back", isOn: $spec.asks_questions)
+                }
+                Section("Do's and don'ts") {
+                    TextField("Do (one per line)", text: list($spec.dos), axis: .vertical).lineLimit(1...4)
+                    TextField("Don't (one per line)", text: list($spec.donts), axis: .vertical).lineLimit(1...3)
+                    TextField("Example lines (User: … / Aria: …)", text: example, axis: .vertical).lineLimit(2...6)
+                    TextField("Disclaimer (legal, medical, financial; optional)", text: $spec.disclaimer)
+                }
+                Section("Defaults") {
+                    Picker("Voice", selection: $spec.voice) { ForEach(Voices.all, id: \.id) { Text($0.name).tag($0.id) } }
+                    Picker("Brain", selection: $spec.brain) { Text("Fast").tag("fast"); Text("Deeper").tag("deeper") }
+                    LabeledContent("Creativity") { Slider(value: $spec.temperature, in: 0.1...1.0) }
+                    Picker("Answer length", selection: $spec.length) { Text("Short").tag("short"); Text("Medium").tag("medium"); Text("Long").tag("long") }
+                    Picker("Tables & diagrams", selection: $spec.rich) { Text("Rarely").tag("rarely"); Text("When helpful").tag("sometimes"); Text("Often").tag("often") }
+                    Toggle("Uses web research", isOn: $spec.web)
+                }
+                Section("Live preview") {
+                    HStack {
+                        TextField("Test question", text: $question)
+                        Button("Preview") { runPreview() }.disabled(!busy.isEmpty || !web.engineReady || spec.name.isEmpty)
+                    }
+                    if !busy.isEmpty { HStack { ProgressView().controlSize(.small); Text(busy).foregroundStyle(.secondary) } }
+                    if !preview.isEmpty { Text(preview).textSelection(.enabled) }
                 }
             }
             .formStyle(.grouped)
             Divider()
             HStack {
-                Text("Air's core rules are always added on top.").font(.caption).foregroundStyle(.secondary)
+                Text("Air's core rules (confirmations, privacy, no made-up facts, Aria's identity) always apply.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || (text.isEmpty && purpose.isEmpty))
+                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(spec.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(14)
         }
-        .frame(width: 620, height: 620)
+        .frame(width: 640, height: 640)
         .onAppear {
-            if let e = editing { name = e.name; emoji = e.emoji; purpose = e.summary; text = market.text(for: e.id) ?? e.layered; voice = e.voice }
+            if let e = editing {
+                spec = market.spec(e.id) ?? {
+                    var b = PersonaSpec.blank(name: e.name); b.id = e.id; b.emoji = e.emoji; b.role = e.summary; b.voice = e.voice
+                    return b
+                }()
+            }
         }
     }
 
-    private func compose() -> String {
-        func level(_ v: Double, _ low: String, _ mid: String, _ high: String) -> String { v < 0.34 ? low : (v < 0.67 ? mid : high) }
-        let vals = values.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let ruleLines = rules.split(separator: "\n").map { "- " + $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
-        return """
-        IDENTITY
-        You are Aria, \(name.isEmpty ? "a personality" : name). \(purpose)
-
-        VALUES, IN ORDER
-        \(vals.enumerated().map { "\($0.offset + 1). \($0.element)." }.joined(separator: " "))
-
-        HONESTY
-        - Never invent facts, numbers, sources or links. Say how sure you are.
-        - If the user states something false, correct it plainly first. No flattery.
-        \(ruleLines)
-
-        SPOKEN STYLE
-        You are heard, not read. \(level(warmth, "Cool and matter-of-fact.", "Friendly.", "Warm and caring.")) \(level(directness, "Gentle and tactful.", "Clear.", "Blunt and direct.")) \(level(playfulness, "Serious.", "With a light touch.", "Playful, with humour.")) One or two points at a time. No lists, no markdown.
-        \(examples.isEmpty ? "" : "\nEXAMPLES (tone only; not facts about the user)\n" + examples)
-        """
+    private func runPreview() {
+        busy = "Writing a sample answer…"
+        EngineTasks.run(kind: "preview", payload: ["name": spec.name, "text": spec.compiled(), "question": question]) { out in
+            busy = ""; preview = out ?? "No answer (is Aria running?)"
+        }
     }
 
     private func draft() {
-        busy = true
-        EngineTasks.run(kind: "draft", payload: ["name": name, "text": describe]) { out in
-            busy = false
-            if let out, !out.isEmpty { text = out }
+        busy = "Drafting the fields…"
+        EngineTasks.run(kind: "draftspec", payload: ["name": spec.name, "text": describe]) { out in
+            busy = ""
+            guard let out, let a = out.firstIndex(of: "{"), let b = out.lastIndex(of: "}"),
+                  let o = try? JSONSerialization.jsonObject(with: Data(out[a...b].utf8)) as? [String: Any] else { return }
+            func strs(_ k: String) -> [String] { (o[k] as? [Any])?.compactMap { $0 as? String } ?? [] }
+            if let v = o["name"] as? String { spec.name = v }
+            if let v = o["emoji"] as? String { spec.emoji = v }
+            if let v = o["role"] as? String { spec.role = v }
+            if let v = o["expertise"] as? String { spec.expertise = v }
+            spec.focus = strs("focus"); spec.frameworks = strs("frameworks"); spec.phrases = strs("phrases")
+            spec.dos = strs("dos"); spec.donts = strs("donts")
+            if let t = o["tone"] as? [String: Double] {
+                spec.tone = .init(formal: t["formal"] ?? 0.5, warmth: t["warmth"] ?? 0.5, detail: t["detail"] ?? 0.5,
+                                  bold: t["bold"] ?? 0.5, playful: t["playful"] ?? 0.3)
+            }
+            if let ex = o["examples"] as? [[String]] { spec.examples = ex.filter { $0.count == 2 } }
+            if let v = o["length"] as? String, ["short", "medium", "long"].contains(v) { spec.length = v }
+            if let v = o["temperature"] as? Double { spec.temperature = min(1, max(0.1, v)) }
+            if let v = o["disclaimer"] as? String { spec.disclaimer = v }
         }
     }
 
     private func save() {
-        let body = text.isEmpty ? compose() : text
-        let item = market.saveCustom(name: name, emoji: emoji.isEmpty ? "✨" : String(emoji.prefix(2)), summary: purpose.isEmpty ? String(body.prefix(100)) : purpose,
-                                     text: body, voice: voice, replacing: editing?.id)
+        var sp = spec
+        if editing == nil || ProSpecs.spec(sp.id) != nil { sp.id = "my-\(UUID().uuidString.prefix(8).lowercased())" }
+        sp.category = "Mine"
+        sp.text = sp.compiled()
+        market.specs[sp.id] = sp
+        let item = market.saveCustom(name: sp.name, emoji: sp.emoji, summary: sp.role, text: sp.text ?? "",
+                                     voice: sp.voice, replacing: sp.id)
         prefs.personality = item.id
         dismiss()
     }
+}
+
+struct ToneSlider: View {
+    let label: String
+    @Binding var value: Double
+    var body: some View { LabeledContent(label) { Slider(value: $value, in: 0...1) } }
 }
 
 /// One-off jobs for Aria's local model (refine, sample, draft), through the engine's /api/task.

@@ -46,12 +46,11 @@ struct Personality: Identifiable, Decodable {
 }
 
 enum Personas {
-    static let presets: [Personality] = {
-        guard let url = Bundle.main.url(forResource: "personas", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let list = try? JSONDecoder().decode([Personality].self, from: data) else { return [] }
-        return list
-    }()
+    /// Air's own personalities (Analyst, Sparring Partner, Mentor, Free Spirit, French Tutor, Jyotish
+    /// Astrologer), each its own compact character spec (Resources/professionals.json).
+    static let presets: [Personality] = ProSpecs.builtIns.map {
+        Personality(id: $0.id, name: $0.name, summary: $0.role.prefix(1).uppercased() + $0.role.dropFirst(), text: $0.text ?? $0.compiled())
+    }
     static let defaultID = "analyst"
     static let customID = "custom"
     static let customStarter = "IDENTITY\nYou are Aria. Describe who Aria should be here.\n\nVALUES, IN ORDER\n1. Truth. 2. Usefulness. 3. Comfort.\n\nRULES\n- Correct me plainly when I'm wrong. Never flatter me."
@@ -84,7 +83,16 @@ final class Prefs: ObservableObject {
 
     @Published var voice: String { didSet { d.set(voice, forKey: "ariaVoice") } }
     @Published var brain: Brain { didSet { d.set(brain.rawValue, forKey: "ariaBrain") } }
-    @Published var personality: String { didSet { d.set(personality, forKey: "ariaPersonality") } }
+    @Published var personality: String {
+        didSet {
+            d.set(personality, forKey: "ariaPersonality")
+            // Each personality brings its own suggested voice.
+            if personality != oldValue, let v = MainActor.assumeIsolated({ Marketplace.shared.spec(personality)?.voice }),
+               Voices.all.contains(where: { $0.id == v }), d.object(forKey: "airKeepVoice") == nil {
+                voice = v
+            }
+        }
+    }
     /// Reason before answering (hidden from speech). Only for brains that can think.
     @Published var thinkFirst: Bool { didSet { d.set(thinkFirst, forKey: "ariaThinkFirst") } }
     /// Check facts online when the Mac is online (search queries only). On by default.
@@ -131,11 +139,12 @@ final class Prefs: ObservableObject {
     var engineConfig: [String: Any] {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
-         "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking]
+         "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
+         "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)"
     }
 
     @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {

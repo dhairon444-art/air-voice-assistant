@@ -68,8 +68,24 @@ final class Marketplace: ObservableObject {
 
     // MARK: lookup
 
-    var all: [CatalogItem] { custom + catalog }
-    func item(_ id: String) -> CatalogItem? { custom.first { $0.id == id } ?? catalog.first { $0.id == id } }
+    /// The Professionals (Air's own, written as distinct characters), shown first.
+    let professionals: [CatalogItem] = ProSpecs.professionals.map { sp in
+        CatalogItem(id: sp.id, kind: "personality", name: sp.name, emoji: sp.emoji,
+                    summary: sp.role.prefix(1).uppercased() + sp.role.dropFirst(), category: "Professionals",
+                    tags: [sp.category.lowercased()] + sp.frameworks.prefix(2).map { $0.lowercased() },
+                    tone: sp.tone.playful > 0.6 ? "playful" : (sp.tone.warmth > 0.7 ? "warm" : (sp.tone.warmth < 0.35 ? "blunt" : "objective")),
+                    honesty: "factual", length: sp.length == "long" ? "in-depth" : "concise", uses_web: sp.web, voice: sp.voice,
+                    popularity: 20_000 + (sp.category == "Marketing" ? 500 : 0), original: sp.text ?? "", removed: [],
+                    layered: sp.text ?? sp.compiled(), source: CatalogSource(name: "Air", url: "", author: "Air", licence: "Air"),
+                    added: nil)
+    }
+    var all: [CatalogItem] { custom + professionals + catalog }
+    /// Specs for the owner's own personalities made in the editor (editable later).
+    @Published var specs: [String: PersonaSpec] = [:] { didSet { save() } }
+    func spec(_ id: String) -> PersonaSpec? { specs[id] ?? ProSpecs.spec(id) }
+    func item(_ id: String) -> CatalogItem? {
+        custom.first { $0.id == id } ?? professionals.first { $0.id == id } ?? catalog.first { $0.id == id }
+    }
     func isInstalled(_ id: String) -> Bool { installed.contains(id) || custom.contains { $0.id == id } }
     var installedPersonalities: [CatalogItem] {
         let ids = installed + custom.map(\.id).filter { !installed.contains($0) }
@@ -207,11 +223,15 @@ final class Marketplace: ObservableObject {
     // MARK: recommendations
 
     /// Matches the owner's interests in Profile.md against tags and categories.
+    var recentlyUsed: [CatalogItem] {
+        recent.sorted { $0.value > $1.value }.prefix(10).compactMap { item($0.key) }
+    }
+
     func recommended(limit: Int = 8) -> [CatalogItem] {
         let profile = (try? String(contentsOf: Vault.url.appendingPathComponent("Profile.md"), encoding: .utf8))?.lowercased() ?? ""
         guard !profile.isEmpty else { return [] }
         let words = Set(profile.split { !$0.isLetter }.map(String.init).filter { $0.count > 4 })
-        let scored = catalog.filter { !$0.isSkill }.map { it -> (CatalogItem, Int) in
+        let scored = (professionals + catalog).filter { !$0.isSkill }.map { it -> (CatalogItem, Int) in
             let hay = Set((it.tags + it.category.lowercased().split(separator: " ").map(String.init) +
                            it.name.lowercased().split(separator: " ").map(String.init)).map { $0.lowercased() })
             return (it, hay.intersection(words).count)
@@ -229,6 +249,7 @@ final class Marketplace: ObservableObject {
         var refined: [String: String]
         var samples: [String: String]
         var recent: [String: Date]
+        var specs: [String: PersonaSpec]?
     }
 
     private func load() {
@@ -253,13 +274,14 @@ final class Marketplace: ObservableObject {
             refined = s.refined
             samples = s.samples
             recent = s.recent
+            specs = s.specs ?? [:]
         }
     }
 
     private func save() {
         guard !loading else { return }
         let s = State(installed: installed, favourites: Array(favourites), hiddenBuiltins: Array(hiddenBuiltins),
-                      custom: custom, refined: refined, samples: samples, recent: recent)
+                      custom: custom, refined: refined, samples: samples, recent: recent, specs: specs)
         if let d = try? JSONEncoder().encode(s) {
             try? d.write(to: Self.dir.appendingPathComponent("state.json"), options: .atomic)
         }

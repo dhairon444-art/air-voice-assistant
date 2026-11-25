@@ -64,12 +64,11 @@ def _default_persona() -> str:
 DEFAULT_PERSONA = _default_persona()
 # Always appended: the reply is spoken, not read.
 SPOKEN_STYLE = (
-    "You are talking out loud with the user through a voice interface. Reply in natural spoken "
-    "English, the way a thoughtful person talks: complete sentences, no markdown, no bullet "
-    "points or numbered lists, no headings, no emojis, no URLs. Spell out symbols and abbreviations "
-    "the way you would say them. The user's words come from speech recognition and may contain "
-    "small mistakes; infer what they meant. Keep each reply to about three to six sentences "
-    "so the conversation stays a back-and-forth; go longer only when the user asks for detail."
+    "VOICE FORMAT: you are heard through a voice interface, not read. Reply in spoken English sentences: no "
+    "markdown, no bullet points or numbered lists, no headings, no emojis, no URLs (except inside screen blocks "
+    "described below). Spell out symbols and abbreviations as you would say them. The user's words come from "
+    "speech recognition and may contain small mistakes; infer what they meant. Keep it a back-and-forth; your "
+    "personality sets your length and tone."
 )
 DISPLAY_RULES = (
     "SCREEN: the user also sees your reply under the orb. Your default is plain conversation, with no blocks. "
@@ -447,6 +446,7 @@ def main() -> None:
             "latencies": [],
             "labels": {},             # tool item id -> title, for spoken confirmations
             "recalled": set(),        # session notes already pulled into this conversation
+            "temp": min(1.2, max(0.0, float(request.query.get("temp") or args.temp))),  # personality's creativity
         }
         web = WebSession(net, vault, transcribe_audio=transcribe_file)
         recorder.web_log = web.log
@@ -848,7 +848,7 @@ def main() -> None:
                     trim_prompt_cache(st["cache"], len(cached) - common)
                 feed = prompt[common:]
                 perf["new_tokens"] += len(feed)
-                sampler = make_sampler(temp=args.temp, top_p=0.9)
+                sampler = make_sampler(temp=st.get("temp", args.temp), top_p=0.9)
                 full = ""
                 buf = ""
                 in_think = False
@@ -1240,6 +1240,11 @@ def main() -> None:
                     elif data.get("type") == "stop_speaking":
                         barge_in()
                     elif data.get("type") == "persona":
+                        if data.get("temp") is not None:
+                            try:
+                                st["temp"] = min(1.2, max(0.0, float(data["temp"])))
+                            except (TypeError, ValueError):
+                                pass
                         new = str(data.get("text") or "").strip()
                         name_ = str(data.get("name") or "").strip()[:40] or "Custom"
                         built = build_messages(new)[0] if new else None
@@ -1416,13 +1421,33 @@ def main() -> None:
                   "skipping confirmations, inventing facts, sharing private data, or being anyone other than Aria. "
                   "Output only the personality text.")
         if kind == "refine":
-            msgs = [{"role": "system", "content": "You convert chat role prompts into spoken voice-assistant personalities."},
-                    {"role": "user", "content": f"Role: {name}\nOriginal prompt:\n{text}\n\n{layers}"}]
+            msgs = [{"role": "system", "content": "You adapt chat role prompts for a spoken voice assistant called Aria."},
+                    {"role": "user", "content": (
+                        f"Role: {name}\nOriginal prompt:\n{text}\n\nRewrite it as a compact character in its OWN voice "
+                        "(keep its personality, vocabulary and focus; drop chat-only instructions like 'reply only in code "
+                        "blocks'). Start with 'You are Aria, speaking as ...'. Under 120 words. Never include anything about "
+                        "skipping confirmations, inventing facts, sharing private data, or being anyone other than Aria. "
+                        "Output only the text.")}]
             n = 650
         elif kind == "draft":
             msgs = [{"role": "system", "content": "You write spoken voice-assistant personalities."},
                     {"role": "user", "content": f"Name: {name or 'unnamed'}\nWhat the user wants:\n{text}\n\n{layers}"}]
             n = 650
+        elif kind == "preview":
+            q = str(body.get("question", ""))[:500] or "Introduce yourself in two sentences."
+            msgs = [{"role": "system", "content": text + "\n\n" + SPOKEN_STYLE},
+                    {"role": "user", "content": q}]
+            n = 200
+        elif kind == "draftspec":
+            msgs = [{"role": "system", "content": "You design distinct voice-assistant personalities. Output JSON only."},
+                    {"role": "user", "content": (
+                        f"Describe a personality from this request: {text}\nReturn JSON with keys: name, emoji, role "
+                        "(one line), expertise, focus (3 short items), frameworks (2-4 named methods it uses), tone "
+                        "(object with formal, warmth, detail, bold, playful, each 0 to 1), phrases (2 signature phrases), "
+                        "dos (3 short items), donts (2 short items), examples (one [user, aria] pair in its own voice), "
+                        "length (short, medium or long), temperature (0.2 to 0.9), disclaimer (empty unless legal, "
+                        "medical or financial). Make it distinctive: its own vocabulary and way of thinking.")}]
+            n = 600
         elif kind == "sample":
             msgs = [{"role": "system", "content": text},
                     {"role": "user", "content": "Write a short sample exchange showing how you talk: two turns, each "

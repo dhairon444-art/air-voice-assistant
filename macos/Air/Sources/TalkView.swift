@@ -226,59 +226,88 @@ struct PersonalityPopover: View {
     @EnvironmentObject var prefs: Prefs
     @EnvironmentObject var web: WebController
     @ObservedObject private var market = Marketplace.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var highlight: String?
+    private let rowHeight: CGFloat = 46
+
+    struct Entry: Identifiable, Hashable { let id: String; let emoji: String; let name: String; let role: String }
+
+    /// Active first, then pinned and recent, then everything else.
+    private var entries: [Entry] {
+        var seen = Set<String>(), out: [Entry] = []
+        func add(_ id: String) {
+            guard !seen.contains(id), !market.hiddenBuiltins.contains(id) else { return }
+            let spec = market.spec(id), item = market.item(id), preset = Personas.preset(id)
+            guard let name = spec?.name ?? item?.name ?? preset?.name ?? (id == Personas.customID ? "Custom" : nil) else { return }
+            seen.insert(id)
+            out.append(Entry(id: id, emoji: spec?.emoji ?? item?.emoji ?? "✨", name: name,
+                             role: spec.map { $0.role } ?? item?.summary ?? preset?.summary ?? "Your own text"))
+        }
+        add(prefs.personality)
+        market.favourites.sorted().forEach(add)
+        market.recent.sorted { $0.value > $1.value }.map(\.key).forEach(add)
+        Personas.presets.map(\.id).forEach(add)
+        market.installedPersonalities.map(\.id).forEach(add)
+        ProSpecs.professionals.map(\.id).forEach(add)
+        add(Personas.customID)
+        let q = query.lowercased().trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? out : out.filter { $0.name.lowercased().contains(q) || $0.role.lowercased().contains(q) }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Personality").font(.headline).padding(.bottom, 4)
-            ForEach(Personas.presets.filter { !market.hiddenBuiltins.contains($0.id) }) { p in
-                ChoiceRow(title: p.name, subtitle: p.summary, selected: prefs.personality == p.id) {
-                    prefs.personality = p.id
+        let list = entries
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search personalities", text: $query).textFieldStyle(.plain)
+                    .onSubmit { if let h = highlight ?? list.first?.id { choose(h) } }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
+            List(list, selection: $highlight) { e in
+                HStack(spacing: 10) {
+                    Text(e.emoji).font(.title3).frame(width: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(e.name).font(.callout.weight(.medium)).lineLimit(1)
+                        Text(e.role).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if e.id == prefs.personality { Image(systemName: "checkmark").foregroundStyle(.tint) }
                 }
+                .frame(height: rowHeight - 8)
+                .contentShape(Rectangle())
+                .onTapGesture { choose(e.id) }
+                .tag(e.id)
             }
-            ForEach(market.installedPersonalities.prefix(12)) { it in
-                ChoiceRow(title: "\(it.emoji) \(it.name)\(market.favourites.contains(it.id) ? " ★" : "")",
-                          subtitle: it.summary, selected: prefs.personality == it.id) {
-                    prefs.personality = it.id
-                    market.markUsed(it.id)
-                }
-            }
-            ChoiceRow(title: "Custom", subtitle: "Your own text", selected: prefs.personality == Personas.customID) {
-                prefs.personality = Personas.customID
-            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            // About three rows show; the rest scroll inside (five at most when there are few).
+            .frame(height: min(CGFloat(max(list.count, 1)), 3.5) * rowHeight)
+            .onKeyPress(.return) { if let h = highlight { choose(h) }; return .handled }
             if prefs.personality == "freespirit" && prefs.brain == .fast {
-                HStack {
-                    Label("Free Spirit is more reliable with the Deeper brain (fewer made-up facts).", systemImage: "cpu")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Use Deeper") { prefs.brain = .deeper }.controlSize(.small).disabled(web.live)
-                }
-                .padding(.top, 4)
+                Text("Tip: Free Spirit is more reliable with the Deeper brain.").font(.caption).foregroundStyle(.secondary)
             }
             if prefs.personality == "frenchtutor" {
-                Label("French sentences use the French voice; speech recognition switches to multilingual for lessons (a few seconds when a lesson starts). Feedback covers words, not accent.",
-                      systemImage: "character.bubble")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
+                Text("French sentences use the French voice; feedback covers words, not accent.").font(.caption).foregroundStyle(.secondary)
             }
-            if prefs.personality == "freespirit" && prefs.voice != "af_bella" {
-                HStack {
-                    Label("Bella is the most expressive voice for Free Spirit.", systemImage: "waveform")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Use Bella") { prefs.voice = "af_bella" }.controlSize(.small)
-                }
-                .padding(.top, 4)
-            }
-            Divider().padding(.vertical, 4)
+            Divider()
             HStack {
-                Button("Browse personalities…") { AppActions.showMarketplace() }
+                Button("Browse Marketplace…") { dismiss(); AppActions.showMarketplace() }
                 Spacer()
-                Button("Edit…") { AppActions.openSettings(.personality) }
+                Button("Edit…") { dismiss(); AppActions.openSettings(.personality) }
             }
-                .buttonStyle(.link)
+            .buttonStyle(.link)
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(12)
+        .frame(width: 330)
+        .onAppear { highlight = prefs.personality }
+    }
+
+    private func choose(_ id: String) {
+        prefs.personality = id
+        market.markUsed(id)
+        dismiss()
     }
 }
 

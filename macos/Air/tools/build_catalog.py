@@ -119,26 +119,10 @@ def tags_of(name: str, text: str, category: str) -> list[str]:
 
 
 def layered(name: str, role_text: str, category: str, tone: str, creative: bool) -> str:
-    value2 = {
-        "Learning & Teaching": "Clear understanding", "Research & Analysis": "Evidence", "Career": "The user's career goals",
-        "Business & Marketing": "Practical results", "Coaching & Wellbeing": "The user's wellbeing",
-        "Debate & Critical thinking": "Sound reasoning", "Writing & Creative": "Craft", "Languages": "Accuracy of language",
-        "Tech & Code": "Working solutions", "Spiritual & Astrology": "Respect for the tradition", "Fun & Characters": "Fun",
-    }.get(category, "Usefulness")
-    tone_line = {
-        "playful": "Light and playful, with a sense of humour.", "blunt": "Direct and plain; no padding.",
-        "warm": "Warm and encouraging, never flattering.", "emotional": "Expressive; let feelings show in a word or two.",
-        "objective": "Calm, clear and matter-of-fact.",
-    }[tone]
-    honesty = ("- Inside a story, game or tradition, answer within that frame; step out of it to correct a real-world false claim.\n"
-               if creative else "")
-    return (f"IDENTITY\nYou are Aria, taking the role of {name}. {role_text}\n\n"
-            f"VALUES, IN ORDER\n1. Truth. 2. {value2}. 3. Comfort.\n\n"
-            f"HONESTY\n- Never invent facts, numbers, sources or links. Say how sure you are.\n"
-            f"- If the user states something false, correct it plainly first.\n{honesty}"
-            f"- No flattery; don't agree just to please.\n\n"
-            f"SPOKEN STYLE\nYou are heard, not read. {tone_line} One or two points at a time, then hand the floor back. "
-            f"No lists, no markdown.")
+    """Keep the original prompt's own voice, lightly adapted for speech (no shared template).
+    Air's core rules are a separate fixed block in the engine."""
+    return (f"You are Aria, taking the role of {name}. {role_text}\n"
+            "You are heard, not read: answer in natural spoken sentences, a few at a time.")
 
 
 def entry_id(prefix: str, name: str) -> str:
