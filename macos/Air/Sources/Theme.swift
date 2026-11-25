@@ -70,6 +70,7 @@ struct Themed: ViewModifier {
             .tint(theme.accent)
             .background(amoled ? Color.black : Color.clear)
             .toolbarBackground(amoled ? AnyShapeStyle(Color.black) : AnyShapeStyle(.bar), for: .windowToolbar)
+            .toolbarBackground(amoled ? .visible : .automatic, for: .windowToolbar)
             .preferredColorScheme(amoled ? .dark : nil)
             .onChange(of: themeID) { _, _ in IconArt.applyDockIcon() }
             .onChange(of: background) { _, _ in AppearanceMode.apply() }
@@ -81,6 +82,14 @@ extension View {
     func amoledList() -> some View { modifier(AmoledList()) }
     /// Panels and cards: near-black under AMOLED instead of the system grey.
     func panelBackground<S: Shape>(in shape: S) -> some View { modifier(PanelBackground(shape: shape)) }
+    /// Window-level backgrounds (the root, the control bar): pure black under AMOLED.
+    func surface<S: ShapeStyle>(_ style: S) -> some View { modifier(Surface(style: AnyShapeStyle(style))) }
+}
+
+struct Surface: ViewModifier {
+    let style: AnyShapeStyle
+    @Environment(\.amoled) private var amoled
+    func body(content: Content) -> some View { content.background(amoled ? AnyShapeStyle(Color.black) : style) }
 }
 
 struct AmoledList: ViewModifier {
@@ -111,7 +120,10 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         // The -AirAppearance launch argument (screenshots) wins over the saved choice.
         let forced = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["AirAppearance"] as? String
         let amoled = UserDefaults.standard.string(forKey: "airBackground") == "amoled"
-        for w in NSApp.windows where !(w is NSPanel) { w.backgroundColor = amoled ? .black : .windowBackgroundColor }
+        for w in NSApp.windows where !(w is NSPanel) {
+            w.backgroundColor = amoled ? .black : .windowBackgroundColor
+            w.titlebarAppearsTransparent = amoled  // let the black window show through the toolbar
+        }
         if amoled && forced == nil { NSApp.appearance = NSAppearance(named: .darkAqua); return }
         switch forced ?? UserDefaults.standard.string(forKey: "airAppearanceMode") ?? "system" {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)

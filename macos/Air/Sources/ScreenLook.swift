@@ -11,8 +11,8 @@ enum ScreenLook {
     static let defaultExcluded = ["1Password", "Keychain Access", "Passwords", "Bitwarden", "Dashlane",
                                   "LastPass", "Enpass", "Proton Pass", "KeePassXC"]
 
-    static var enabled: Bool { UserDefaults.standard.object(forKey: "airVisionEnabled") as? Bool ?? true }
-    static var excludeMessages: Bool { UserDefaults.standard.object(forKey: "airVisionExcludeMessages") as? Bool ?? true }
+    static var enabled: Bool { (UserDefaults.standard.object(forKey: "airVisionEnabled") == nil || UserDefaults.standard.bool(forKey: "airVisionEnabled")) }
+    static var excludeMessages: Bool { (UserDefaults.standard.object(forKey: "airVisionExcludeMessages") == nil || UserDefaults.standard.bool(forKey: "airVisionExcludeMessages")) }
     static var excludedNames: [String] {
         let custom = UserDefaults.standard.string(forKey: "airVisionExcluded") ?? defaultExcluded.joined(separator: ", ")
         var names = custom.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }

@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !window.setFrameUsingName("AirMain") { window.center() }
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
+        AppearanceMode.apply()  // window colour for AMOLED, now that the window exists
         NSApp.activate(ignoringOtherApps: true)
 
         installKeyMonitor()
@@ -89,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func showMain() {
         window.makeKeyAndOrderFront(nil)
+        AppearanceMode.apply()  // window colour for AMOLED, now that the window exists
         NSApp.activate(ignoringOtherApps: true)
     }
 

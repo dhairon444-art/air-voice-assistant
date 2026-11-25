@@ -490,6 +490,8 @@ struct OrbSettingsSection: View {
     @AppStorage("airOrbDensity") private var density = "medium"
     @AppStorage("airOrbGlow") private var glow = 0.6
     @AppStorage("airOrbPalette") private var palette = "nebula"
+    @AppStorage("airOrbShadow") private var shadow = true
+    @AppStorage("airOrbShadowIntensity") private var shadowIntensity = 0.6
     var body: some View {
         Section {
             LabeledContent("Sensitivity") {
@@ -504,6 +506,9 @@ struct OrbSettingsSection: View {
             }
             .pickerStyle(.segmented)
             LabeledContent("Glow") { Slider(value: $glow, in: 0...1) }
+            Toggle("Orb backdrop glow", isOn: $shadow)
+            LabeledContent("Glow intensity") { Slider(value: $shadowIntensity, in: 0...1) }
+                .disabled(!shadow)
             Picker("Colours", selection: $palette) {
                 Text("Nebula").tag("nebula")
                 Text("Follow theme").tag("theme")

@@ -32,7 +32,7 @@ struct TalkView: View {
                 if prefs.showThinking && overlay {
                     ThinkingSidebar()
                         .frame(width: min(width, geo.size.width - 48))
-                        .background(.regularMaterial)
+                        .surface(.regularMaterial)
                         .shadow(color: .black.opacity(0.25), radius: 12, x: -2)
                         .transition(.move(edge: .trailing))
                 }
@@ -99,7 +99,7 @@ struct TalkColumn: View {
             ControlBar()
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
-                .background(.bar)
+                .surface(.bar)
         }
         .animation(.snappy(duration: 0.25), value: web.confirm)
         .animation(.snappy(duration: 0.25), value: web.error)
@@ -334,19 +334,11 @@ struct ChoiceRow: View {
 
 struct StateHero: View {
     @EnvironmentObject var web: WebController
-    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("airOrbFPS") private var orbFPS = 30
     var body: some View {
         VStack(spacing: 14) {
-            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted)
+            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: orbFPS)
                 .frame(width: 220, height: 220)
-                .background {
-                    // The glowing dots need dark space behind them; in light mode the orb sits in it.
-                    if colorScheme == .light {
-                        Circle().fill(RadialGradient(colors: [.black, .black.opacity(0.85), .black.opacity(0)],
-                                                     center: .center, startRadius: 0, endRadius: 120))
-                            .frame(width: 240, height: 240)
-                    }
-                }
                 .accessibilityHidden(true)
             if let what = web.looking {
                 Label("Looking at \(what)", systemImage: "eye.fill")
@@ -760,7 +752,7 @@ struct ConfirmCardView: View {
         }
         .controlSize(.large)
         .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .panelBackground(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(theme.accent.opacity(0.35)))
         .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
         .accessibilityElement(children: .contain)

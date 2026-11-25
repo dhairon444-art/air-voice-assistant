@@ -81,6 +81,8 @@ struct ResearchProgress: Equatable {
 
 @MainActor
 final class AudioMeter: ObservableObject {
+    /// A meter that never changes (for indicators that should hold still).
+    static let still = AudioMeter()
     @Published var mic: Double = 0
     @Published var out: Double = 0
     @Published var bands: [Double] = Array(repeating: 0, count: 8)
@@ -415,6 +417,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
                     let t = Date().timeIntervalSince(start)
                     let env = max(0, sin(t * 7.5)) * (0.6 + 0.4 * sin(t * 0.9))
                     let pitch = 2.5 + 2 * sin(t * 1.3)
+                    if UserDefaults.standard.bool(forKey: "AirDemoDry") { _ = env + pitch; return }
+                    if UserDefaults.standard.bool(forKey: "AirDemoLevelOnly") { self.outLevel = env * 0.15; return }
                     self.bands = (0..<8).map { i in max(0, env * exp(-pow(Double(i) - pitch, 2) / 3) * (0.8 + 0.2 * sin(t * 13 + Double(i)))) }
                     if name == "speaking" { self.outLevel = env * 0.15 } else { self.micLevel = env * 0.12 }
                 }

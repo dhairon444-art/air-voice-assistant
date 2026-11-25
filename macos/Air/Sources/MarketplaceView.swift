@@ -422,6 +422,12 @@ struct MarketDetail: View {
 
     private func install() {
         market.install(item.id)
+        if !item.isSkill {
+            // Installing from the detail page also makes it the active personality.
+            market.trying = nil
+            prefs.personality = item.id
+            market.markUsed(item.id)
+        }
         if !item.isSkill && market.refined[item.id] == nil && web.engineReady { refine() }
     }
 

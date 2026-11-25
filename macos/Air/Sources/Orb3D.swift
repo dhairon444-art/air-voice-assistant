@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SceneKit
 import SwiftUI
 
@@ -13,17 +14,23 @@ import SwiftUI
 /// 30 fps (15 in the Island), paused whenever the window is hidden, a still frame under Reduce Motion.
 struct Orb3DView: NSViewRepresentable {
     let state: TalkState
-    @ObservedObject var meter: AudioMeter
+    /// Not observed by SwiftUI: the scene subscribes to it directly, so audio ticks don't re-run views.
+    let meter: AudioMeter
     var muted = false
     var fps = 30
     /// The tiny Island orb uses fewer dots.
     var tiny = false
+    /// False holds a still frame (the Island does this while the main window, with its own orb, is visible).
+    var animate = true
     @Environment(\.airTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("airOrbSensitivity") private var sensitivity = 1.0
     @AppStorage("airOrbDensity") private var density = "medium"
     @AppStorage("airOrbGlow") private var glow = 0.6
     @AppStorage("airOrbPalette") private var palette = "nebula"
+    @AppStorage("airOrbShadow") private var shadowOn = true
+    @AppStorage("airOrbShadowIntensity") private var shadowIntensity = 0.6
+    @Environment(\.colorScheme) private var scheme
 
     func makeCoordinator() -> OrbScene { OrbScene() }
 
@@ -42,12 +49,12 @@ struct Orb3DView: NSViewRepresentable {
 
     func updateNSView(_ v: SCNView, context: Context) {
         if v.preferredFramesPerSecond != fps { v.preferredFramesPerSecond = fps }
-        if let o = v as? OccludableSCNView { o.motion = !reduceMotion }
-        let count = tiny ? 2500 : (density == "low" ? 12_000 : density == "high" ? 40_000 : 24_000)
+        if let o = v as? OccludableSCNView { o.motion = animate && !reduceMotion }
+        let count = tiny ? 1200 : (density == "low" ? 12_000 : density == "high" ? 40_000 : 24_000)
         context.coordinator.build(count: count, tiny: tiny)
-        context.coordinator.update(state: state, mic: meter.mic, out: meter.out, muted: muted, bands: meter.bands,
-                                   sensitivity: sensitivity, glow: glow, palette: palette == "theme" ? theme : nil,
-                                   still: reduceMotion)
+        context.coordinator.setShadow(on: shadowOn && !tiny, intensity: shadowIntensity, light: scheme == .light)
+        context.coordinator.configure(meter: meter, state: state, muted: muted, sensitivity: sensitivity, glow: glow,
+                                      palette: palette == "theme" ? theme : nil, still: reduceMotion, live: animate)
     }
 }
 
@@ -58,8 +65,13 @@ final class OccludableSCNView: SCNView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let token { NotificationCenter.default.removeObserver(token) }
-        guard let w = window else { return }
+        if let token { NotificationCenter.default.removeObserver(token); self.token = nil }
+        guard let w = window else {
+            // Removed from its window (tab switch): stop rendering completely.
+            isPlaying = false
+            rendersContinuously = false
+            return
+        }
         token = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: w,
                                                        queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
@@ -85,6 +97,38 @@ final class OrbScene {
     private var smooth = [Double](repeating: 0, count: 8)
     private var warmth = 0.0
     private var lastPalette: [SIMD3<Double>] = []
+    private var sub: AnyCancellable?
+    private let halo = SCNNode()
+    private var shadowCfg = (on: true, intensity: 0.6, light: false)
+    private var glowColor = SIMD3<Double>(0.6, 0.3, 0.9)
+    private weak var meter: AudioMeter?
+    private var cfg: (state: TalkState, muted: Bool, sensitivity: Double, glow: Double, palette: AirTheme?, still: Bool) =
+        (.idle, false, 1, 0.6, nil, false)
+
+    /// State and settings from SwiftUI; audio comes straight from the meter.
+    func configure(meter: AudioMeter, state: TalkState, muted: Bool, sensitivity: Double, glow: Double,
+                   palette: AirTheme?, still: Bool, live: Bool = true) {
+        cfg = (state, muted, sensitivity, glow, palette, still)
+        // Paused (or still): no audio ticks at all, since every uniform change makes SceneKit redraw.
+        if live && !still {
+            if self.meter !== meter || sub == nil {
+                self.meter = meter
+                sub = meter.objectWillChange
+                    .receive(on: RunLoop.main)
+                    .sink { [weak self] _ in self?.tick() }
+            }
+        } else {
+            sub = nil
+            self.meter = meter
+        }
+        tick()
+    }
+
+    private func tick() {
+        guard let m = meter else { return }
+        update(state: cfg.state, mic: m.mic, out: m.out, muted: cfg.muted, bands: m.bands, sensitivity: cfg.sensitivity,
+               glow: cfg.glow, palette: cfg.palette, still: cfg.still)
+    }
     private var lastVec: [String: SIMD4<Double>] = [:]
 
     static let nebula: [SIMD3<Double>] = [[0.25, 0.85, 1.0], [0.30, 0.45, 1.0], [0.58, 0.28, 0.98], [0.92, 0.25, 0.62], [1.0, 0.48, 0.18]]
@@ -106,6 +150,43 @@ final class OrbScene {
         material.diffuse.contents = Self.dotImage()
         material.shaderModifiers = [.geometry: Self.geometry]
         holder.runAction(.repeatForever(.rotateBy(x: 0, y: .pi * 2, z: 0, duration: 48)), forKey: "spin")
+
+        // Backdrop glow: a soft halo behind the orb, centred, in its own colours.
+        for (node, w, h, pos) in [(halo, 3.1, 3.1, SCNVector3(0, 0, -1.2))] {
+            let plane = SCNPlane(width: w, height: h)
+            let m = SCNMaterial()
+            m.lightingModel = .constant
+            m.diffuse.contents = Self.softDisc()
+            m.transparencyMode = .aOne
+            m.writesToDepthBuffer = false
+            m.readsFromDepthBuffer = false
+            m.isDoubleSided = true
+            plane.firstMaterial = m
+            node.geometry = plane
+            node.position = pos
+            node.renderingOrder = -10
+            scene.rootNode.addChildNode(node)
+        }
+    }
+
+    func setShadow(on: Bool, intensity: Double, light: Bool) {
+        shadowCfg = (on, intensity, light)
+        halo.isHidden = !on
+        halo.geometry?.firstMaterial?.blendMode = light ? .alpha : .add
+        // Light backgrounds: normal blending (additive dots vanish into white and read as grey specks).
+        material.blendMode = light ? .alpha : .add
+    }
+
+    /// Soft disc: bright centre fading smoothly to fully transparent at the edge (premultiplied).
+    static func softDisc() -> CGImage {
+        let n = 256
+        let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let colors = [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 0.45), CGColor(gray: 1, alpha: 0.12), CGColor(gray: 1, alpha: 0)]
+        let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(), colors: colors as CFArray, locations: [0, 0.3, 0.65, 1])!
+        let c = CGPoint(x: n / 2, y: n / 2)
+        ctx.drawRadialGradient(g, startCenter: c, startRadius: 0, endCenter: c, endRadius: CGFloat(n) / 2, options: [])
+        return ctx.makeImage()!
     }
 
     /// A Fibonacci sphere; each dot gets a random seed (texcoord) for its own jitter and brightness.
@@ -170,13 +251,22 @@ final class OrbScene {
         let v0 = SIMD4(smooth[0], smooth[1], smooth[2], smooth[3])
         let v1 = SIMD4(smooth[4], smooth[5], smooth[6], smooth[7])
         let v2 = SIMD4(still ? 0 : level, warmth, swirl, scan)
-        let v3 = SIMD4(mutedNow ? 1.0 : 0.0, still ? 0.0 : 1.0, glow, 0)
+        let v3 = SIMD4(mutedNow ? 1.0 : 0.0, still ? 0.0 : 1.0, glow, shadowCfg.light ? 1 : 0)
         for (k, v) in [("b0", v0), ("b1", v1), ("s0", v2), ("s1", v3)] {
             let prev = lastVec[k] ?? SIMD4(repeating: -1)
             if simd_reduce_max(simd_abs(prev - v)) > 0.004 {
                 lastVec[k] = v
                 material.setValue(SCNVector4(v.x, v.y, v.z, v.w), forKey: k)
             }
+        }
+        // Backdrop glow follows the orb: a little brighter and wider as it swells; dim when muted.
+        if shadowCfg.on {
+            let k = shadowCfg.intensity * (mutedNow ? 0.35 : 1)
+            let swell = 1 + 0.12 * (still ? 0 : level)
+            halo.scale = SCNVector3(swell, swell, 1)
+            let c = (pal[1] + pal[2] + pal[3]) / 3
+            halo.geometry?.firstMaterial?.multiply.contents = NSColor(srgbRed: c.x, green: c.y, blue: c.z, alpha: 1)
+            halo.opacity = (shadowCfg.light ? 0.22 : 0.16 + 0.14 * warmth) * k
         }
         if mutedNow || still { holder.removeAction(forKey: "spin") } else if holder.action(forKey: "spin") == nil {
             holder.runAction(.repeatForever(.rotateBy(x: 0, y: .pi * 2, z: 0, duration: 48)), forKey: "spin")
@@ -222,6 +312,7 @@ final class OrbScene {
     float muted = s1.x;
     float motion = s1.y;
     float glow = s1.z;
+    float lightMode = s1.w;
     float t = scn_frame.time * motion;
     float3 p = normalize(_geometry.position.xyz);
     float2 sd = _geometry.texcoords[0];
@@ -252,6 +343,12 @@ final class OrbScene {
     float grey = dot(c, float3(0.3, 0.59, 0.11));
     c = mix(float3(grey), c, clamp(1.15 + 0.4 * loud, 0.0, 1.6) * (1.0 - 0.85 * muted));
     bright *= (1.0 - 0.55 * muted);
-    _geometry.color = float4(c * (bright + band * 1.4), 1.0);
+    if (lightMode > 0.5) {
+        // On white: full colour, transparency instead of darkness, rim strongest.
+        float a = clamp((0.18 + 0.8 * rim) * (0.6 + 0.6 * sd.y) * (1.0 - 0.5 * muted) + band, 0.0, 1.0);
+        _geometry.color = float4(c * a, a);
+    } else {
+        _geometry.color = float4(c * (bright + band * 1.4), 1.0);
+    }
     """
 }

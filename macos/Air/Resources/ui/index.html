@@ -106,6 +106,7 @@
     if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
     sendJSON({ type: 'mic_muted', on: micMuted });
     sendJSON({ type: 'voice_muted', on: voiceMuted });
+    sentPersona = cfg.persona;
     post({ type: 'state', state: 'live' });
   }
 
@@ -123,7 +124,16 @@
   }
 
   const sendJSON = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
-  window.airSetConfig = (c) => { Object.assign(cfg, c || {}); sendJSON({ type: 'show_thinking', on: !!cfg.showThinking }); };
+  let sentPersona = null;
+  window.airSetConfig = (c) => {
+    Object.assign(cfg, c || {});
+    sendJSON({ type: 'show_thinking', on: !!cfg.showThinking });
+    // A personality picked mid-conversation applies from the next reply.
+    if (live && sentPersona !== null && cfg.persona !== sentPersona) {
+      sendJSON({ type: 'persona', text: cfg.persona || '', name: cfg.personalityName || '' });
+    }
+    if (live) sentPersona = cfg.persona;
+  };
   window.airMuteMic = (on) => {
     micMuted = !!on;
     if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });

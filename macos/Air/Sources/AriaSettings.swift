@@ -105,8 +105,8 @@ final class Prefs: ObservableObject {
         }
         edited = e
         personality = d.string(forKey: "ariaPersonality") ?? Personas.defaultID
-        thinkFirst = d.object(forKey: "ariaThinkFirst") as? Bool ?? false
-        factCheck = d.object(forKey: "ariaFactCheck") as? Bool ?? true
+        thinkFirst = d.bool(forKey: "ariaThinkFirst")
+        factCheck = (d.object(forKey: "ariaFactCheck") == nil || d.bool(forKey: "ariaFactCheck"))
         showThinking = d.bool(forKey: "airShowThinking")
         // Leftovers from the earlier two-mode app (old mode, voice and persona keys).
         for old in ["ariaPersona", "persona", "voice", "mode"] { d.removeObject(forKey: old) }
@@ -138,10 +138,10 @@ final class Prefs: ObservableObject {
         "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)"
     }
 
-    @Published var globalHotkey: Bool = UserDefaults.standard.object(forKey: "airGlobalHotkey") as? Bool ?? true {
+    @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {
         didSet { UserDefaults.standard.set(globalHotkey, forKey: "airGlobalHotkey"); onUIPrefsChanged?() }
     }
-    @Published var menuBarIcon: Bool = UserDefaults.standard.object(forKey: "airMenuBarIcon") as? Bool ?? true {
+    @Published var menuBarIcon: Bool = (UserDefaults.standard.object(forKey: "airMenuBarIcon") == nil || UserDefaults.standard.bool(forKey: "airMenuBarIcon")) {
         didSet { UserDefaults.standard.set(menuBarIcon, forKey: "airMenuBarIcon"); onUIPrefsChanged?() }
     }
     var onUIPrefsChanged: (() -> Void)?

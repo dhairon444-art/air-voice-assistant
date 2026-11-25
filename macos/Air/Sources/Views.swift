@@ -39,7 +39,7 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 640, minHeight: 560)
-        .background(.background)
+        .surface(.background)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $ui.tab) {
@@ -218,7 +218,7 @@ struct HistoryView: View {
                 }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-            .background(.background)
+            .surface(.background)
         }
         .onAppear(perform: reload)
         .onChange(of: model.sessionsChanged) { _, _ in reload() }

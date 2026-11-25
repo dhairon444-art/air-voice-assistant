@@ -12,6 +12,8 @@ final class IslandController: ObservableObject {
 
     @Published private(set) var mode: Mode = .hidden
     @Published var hovering = false { didSet { refresh() } }
+    /// Air's main window is on screen (then the Island's tiny orb holds still: the big one is visible).
+    @Published private(set) var mainVisible = false
 
     private let web: WebController
     private let prefs: Prefs
@@ -23,7 +25,7 @@ final class IslandController: ObservableObject {
     /// -AirIslandDemo: keep the Island visible without a live session (screenshots).
     var demo = false
 
-    static var enabled: Bool { UserDefaults.standard.object(forKey: "airIslandEnabled") as? Bool ?? true }
+    static var enabled: Bool { (UserDefaults.standard.object(forKey: "airIslandEnabled") == nil || UserDefaults.standard.bool(forKey: "airIslandEnabled")) }
     static var dotDelay: Double {
         let v = UserDefaults.standard.double(forKey: "airIslandDotDelay")
         return v > 0 ? v : 60
@@ -49,6 +51,13 @@ final class IslandController: ObservableObject {
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refresh() }
+            .store(in: &bag)
+        NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                let main = NSApp.windows.first { !($0 is NSPanel) && $0.title == "Air" }
+                self?.mainVisible = main?.occlusionState.contains(.visible) ?? false
+            }
             .store(in: &bag)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.place(animated: false) }
@@ -234,7 +243,7 @@ struct IslandView: View {
 
     private func pill(_ l: (text: String, symbol: String, tint: Color)) -> some View {
         HStack(spacing: 8) {
-            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: 15, tiny: true)
+            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: 12, tiny: true, animate: !controller.mainVisible)
                 .frame(width: 26, height: 26)
                 .accessibilityHidden(true)
             Text(l.text)
@@ -244,7 +253,7 @@ struct IslandView: View {
                 .contentTransition(.opacity)
             Spacer(minLength: 4)
             if web.voiceMuted { Image(systemName: "speaker.slash.fill").font(.caption).foregroundStyle(.orange) }
-            LevelBars(meter: web.meter, speaking: web.state == .speaking, muted: web.micMuted,
+            LevelBars(meter: controller.mainVisible ? AudioMeter.still : web.meter, speaking: web.state == .speaking, muted: web.micMuted,
                       tint: l.tint, active: web.state == .listening || web.state == .hearing || web.state == .speaking,
                       busy: web.state == .thinking || web.state == .checking || web.state == .working)
         }
@@ -262,7 +271,7 @@ struct IslandView: View {
                 Image(systemName: l.symbol).foregroundStyle(l.tint)
                 Text(l.text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
-                LevelBars(meter: web.meter, speaking: web.state == .speaking, muted: web.micMuted, tint: l.tint,
+                LevelBars(meter: controller.mainVisible ? AudioMeter.still : web.meter, speaking: web.state == .speaking, muted: web.micMuted, tint: l.tint,
                           active: web.state == .listening || web.state == .hearing || web.state == .speaking,
                           busy: web.state == .thinking || web.state == .checking || web.state == .working)
             }
@@ -344,7 +353,6 @@ struct LevelBars: View {
             }
         }
         .frame(height: 18)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: level)
         .onAppear { if busy && !reduceMotion { withAnimation(.easeInOut(duration: 0.7).repeatForever()) { phase = true } } }
         .onChange(of: busy) { _, b in
             phase = false

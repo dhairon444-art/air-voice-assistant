@@ -896,6 +896,8 @@ def main() -> None:
                         speak(rest)
                     said_parts.extend(spoken[before_:])
 
+                if (switched := st.pop("announce", None)):
+                    say(f"Switched to {switched}.")
                 for _round in range(5):  # at most a few tool calls per turn
                     # The first answer streams live for speed. After a tool has run, the follow-up is
                     # checked before it is spoken, so a claim that something was done can be caught.
@@ -1025,7 +1027,8 @@ def main() -> None:
             st["cache_tokens"] = shared["tokens"]
 
         gpu_jobs.put(prime_session)
-        emit("STATUS", f"session start mode=Aria voice={voice} think={think}")
+        emit("STATUS", f"session start mode=Aria voice={voice} think={think} personality={personality or 'Custom'}")
+        trace("personality", f"Personality: {personality or 'Custom'}")
         await ws.send_bytes(b"\x00")
         set_state("listening")
         send_task = asyncio.create_task(sender())
@@ -1045,6 +1048,18 @@ def main() -> None:
                         mic_q.put("END")
                     elif data.get("type") == "stop_speaking":
                         barge_in()
+                    elif data.get("type") == "persona":
+                        new = str(data.get("text") or "").strip()
+                        name_ = str(data.get("name") or "").strip()[:40] or "Custom"
+                        built = build_messages(new)[0] if new else None
+                        if built and built["content"] != messages[0]["content"]:
+                            # Next reply uses it: the system prompt changes, so the KV cache re-primes once.
+                            messages[0] = built
+                            recorder.personality = name_
+                            st["announce"] = name_
+                            emit("STATUS", f"personality switched to {name_}")
+                            trace("personality", f"Personality: {name_}")
+                            event(t="personality", name=name_)
                     elif data.get("type") == "show_thinking":
                         show["on"] = bool(data.get("on"))
                     elif data.get("type") == "mic_muted":
