@@ -11,6 +11,58 @@ enum AppActions {
 // MARK: - Talk screen
 
 struct TalkView: View {
+    @EnvironmentObject var prefs: Prefs
+    @AppStorage("airThinkingWidth") private var width: Double = 340
+
+    var body: some View {
+        GeometryReader { geo in
+            // Too narrow for a side-by-side inspector: the panel floats over the right edge instead.
+            let overlay = geo.size.width - width < 440
+            HStack(spacing: 0) {
+                TalkColumn()
+                if prefs.showThinking && !overlay {
+                    ResizeHandle(width: $width, total: geo.size.width)
+                    ThinkingSidebar().frame(width: width)
+                        .transition(.move(edge: .trailing))
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if prefs.showThinking && overlay {
+                    ThinkingSidebar()
+                        .frame(width: min(width, geo.size.width - 48))
+                        .background(.regularMaterial)
+                        .shadow(color: .black.opacity(0.25), radius: 12, x: -2)
+                        .transition(.move(edge: .trailing))
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: prefs.showThinking)
+    }
+}
+
+/// Drag to resize the Thinking sidebar; the width is remembered.
+struct ResizeHandle: View {
+    @Binding var width: Double
+    let total: CGFloat
+    @State private var start: Double?
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 7)
+            .overlay(Divider())
+            .contentShape(Rectangle())
+            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+            .gesture(DragGesture(minimumDistance: 1)
+                .onChanged { g in
+                    if start == nil { start = width }
+                    width = min(max(240, (start ?? width) - g.translation.width), max(260, Double(total) - 440))
+                }
+                .onEnded { _ in start = nil })
+            .accessibilityHidden(true)
+    }
+}
+
+struct TalkColumn: View {
     @EnvironmentObject var web: WebController
     @EnvironmentObject var prefs: Prefs
     @EnvironmentObject var model: ModelProcess
@@ -31,11 +83,10 @@ struct TalkView: View {
             Spacer(minLength: 8)
             CaptionsView()
                 .frame(maxHeight: .infinity)
-            if prefs.showThinking {
-                ThinkingPanel()
+            if web.live {
+                TypeBox()
                     .padding(.horizontal, 20)
                     .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let card = web.confirm {
                 ConfirmCardView(card: card)
@@ -50,7 +101,35 @@ struct TalkView: View {
         }
         .animation(.snappy(duration: 0.25), value: web.confirm)
         .animation(.snappy(duration: 0.25), value: web.error)
-        .animation(.snappy(duration: 0.25), value: prefs.showThinking)
+    }
+}
+
+/// Type to Aria (works with the mic muted).
+struct TypeBox: View {
+    @EnvironmentObject var web: WebController
+    @State private var text = ""
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "keyboard").foregroundStyle(.secondary)
+            TextField(web.micMuted ? "Mic muted. Type to Aria…" : "Or type to Aria…", text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onSubmit(send)
+            if !text.isEmpty {
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title3) }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityLabel("Send")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+        .onChange(of: web.micMuted) { _, muted in if muted { focused = true } }
+    }
+    private func send() {
+        web.say(text)
+        text = ""
     }
 }
 
@@ -80,13 +159,6 @@ struct TalkTopBar: View {
                     AppActions.openSettings(.brain)
                 }
             }
-            StatusChip(symbol: "brain.head.profile", text: "Show thinking",
-                       tint: prefs.showThinking ? theme.accent : nil,
-                       help: prefs.showThinking ? "Showing Aria's reasoning and activity. Click to hide."
-                                                : "Show Aria's reasoning and activity (what she heard, tools, searches, sources).") {
-                prefs.showThinking.toggle()
-            }
-            .accessibilityAddTraits(prefs.showThinking ? .isSelected : [])
             StatusChip(symbol: !prefs.factCheck ? "globe.badge.chevron.backward" : (web.online ? "checkmark.seal" : "wifi.slash"),
                        text: !prefs.factCheck ? "Fact-check off" : (web.online ? "Fact-check" : "Offline"),
                        tint: prefs.factCheck && !web.online ? .orange : nil,
@@ -253,13 +325,20 @@ struct StateHero: View {
                     .transition(.scale.combined(with: .opacity))
             }
             VStack(spacing: 4) {
-                Label(web.state.title, systemImage: web.state.symbol)
+                let mutedMic = web.live && web.micMuted && (web.state == .listening || web.state == .hearing)
+                Label(mutedMic ? "Mic muted" : web.state.title,
+                      systemImage: mutedMic ? "mic.slash.fill" : web.state.symbol)
                     .font(.title2.weight(.semibold))
+                    .foregroundStyle(mutedMic ? Color.orange : Color.primary)
                     .contentTransition(.opacity)
-                Text(web.state.hint)
+                Text(mutedMic ? "Aria isn't listening. Type below, or unmute with ⇧⌘M." : web.state.hint)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                if web.voiceMuted && web.live {
+                    Label("Voice off: captions only (⇧⌘V)", systemImage: "speaker.slash.fill")
+                        .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                }
                 if let r = web.research {
                     ResearchProgressRow(progress: r)
                 }
@@ -295,60 +374,98 @@ struct ResearchProgressRow: View {
     }
 }
 
-/// Show thinking: Aria's reasoning text (never spoken) and an activity trace of what she heard,
-/// which tools she called with what, the searches, pages and sources, and memory she recalled.
-struct ThinkingPanel: View {
+/// Show thinking, as a right-side inspector: Aria's reasoning text (never spoken) and the activity
+/// trace (what she heard, tool calls, searches, pages, sources, memory), one group per turn, the
+/// current turn open at the bottom and earlier turns collapsed above.
+struct ThinkingSidebar: View {
     @EnvironmentObject var web: WebController
-    @AppStorage("airThinkingExpanded") private var expanded = true
+    @EnvironmentObject var prefs: Prefs
+
+    struct Group: Identifiable { let id: UUID; let title: String; let items: [TraceItem] }
+
+    private var groups: [Group] {
+        var out: [Group] = []
+        var cur: [TraceItem] = []
+        func flush() {
+            guard let first = cur.first else { return }
+            out.append(Group(id: first.id, title: first.kind == "heard" ? first.text : "Session", items: cur))
+            cur = []
+        }
+        for t in web.trace {
+            if t.kind == "heard" { flush() }
+            cur.append(t)
+        }
+        flush()
+        return out
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button {
-                    expanded.toggle()
-                } label: {
-                    Label("Thinking", systemImage: expanded ? "chevron.down" : "chevron.right")
-                        .font(.callout.weight(.semibold))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(expanded ? "Collapse thinking" : "Expand thinking")
+            HStack(spacing: 8) {
+                Label("Thinking", systemImage: "brain.head.profile").font(.headline)
                 Spacer()
-                Text("\(web.trace.count) steps").font(.caption).foregroundStyle(.tertiary)
                 Button("Clear") { web.clearTrace() }
                     .buttonStyle(.borderless).font(.caption)
                     .disabled(web.trace.isEmpty)
+                Button { prefs.showThinking = false } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide thinking (⌥⌘T)")
+                    .accessibilityLabel("Hide thinking")
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            if expanded {
-                Divider()
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            if web.trace.isEmpty {
-                                Text("Aria's reasoning and activity will appear here: what she heard, the tools she calls, searches, pages and sources. Reasoning text needs the Deeper brain with Think first.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            ForEach(web.trace) { item in
-                                TraceRow(item: item).id(item.id)
-                            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if web.trace.isEmpty {
+                            Text("Aria's reasoning and activity appear here as she works: what she heard, the tools she calls and with what, searches, pages, sources and memory. Reasoning text needs the Deeper brain with Think first.")
+                                .font(.callout).foregroundStyle(.secondary)
                         }
-                        .padding(12)
-                        .textSelection(.enabled)
+                        let gs = groups
+                        ForEach(gs) { g in
+                            TurnTraceGroup(group: g, isCurrent: g.id == gs.last?.id)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
                     }
-                    .frame(height: 170)
-                    .onChange(of: web.trace.last?.text) { _, _ in
-                        if let id = web.trace.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                    }
+                    .padding(14)
+                    .textSelection(.enabled)
                 }
+                .onChange(of: web.trace.last?.text) { _, _ in
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: web.trace.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator.opacity(0.6)))
+        .frame(maxHeight: .infinity)
+        .background(.background.secondary)
+    }
+}
+
+struct TurnTraceGroup: View {
+    let group: ThinkingSidebar.Group
+    let isCurrent: Bool
+    @State private var open: Bool?
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(get: { open ?? isCurrent }, set: { open = $0 })) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(group.items.filter { $0.kind != "heard" || group.title == "Session" }) { item in
+                    TraceRow(item: item)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "ear").foregroundStyle(.blue)
+                Text(group.title).font(.callout.weight(.medium)).lineLimit(2)
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
 struct TraceRow: View {
     let item: TraceItem
+    @State private var more = false
     private var meta: (String, String, Color) {
         switch item.kind {
         case "heard": return ("ear", "Heard", .blue)
@@ -371,7 +488,12 @@ struct TraceRow: View {
                     .font(item.kind == "call" ? .caption.monospaced() : .caption)
                     .foregroundStyle(item.kind == "reasoning" ? .secondary : .primary)
                     .italic(item.kind == "reasoning")
+                    .lineLimit(item.kind == "reasoning" && !more ? 4 : nil)
                     .fixedSize(horizontal: false, vertical: true)
+                if item.kind == "reasoning" && item.text.count > 260 {
+                    Button(more ? "Less" : "More") { more.toggle() }
+                        .buttonStyle(.link).font(.caption)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -624,12 +746,17 @@ struct ControlBar: View {
     @EnvironmentObject var web: WebController
     var body: some View {
         HStack(spacing: 16) {
-            HStack(spacing: 6) {
-                Image(systemName: "headphones").foregroundStyle(.secondary)
-                Text("Headphones recommended").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                MuteButton(on: web.micMuted, onSymbol: "mic.slash.fill", offSymbol: "mic.fill",
+                           title: web.micMuted ? "Unmute mic" : "Mute mic", shortcut: "⇧⌘M") { web.toggleMicMute() }
+                MuteButton(on: web.voiceMuted, onSymbol: "speaker.slash.fill", offSymbol: "speaker.wave.2.fill",
+                           title: web.voiceMuted ? "Unmute voice" : "Mute voice", shortcut: "⇧⌘V") { web.toggleVoiceMute() }
+                if !web.live {
+                    Image(systemName: "headphones").foregroundStyle(.secondary)
+                        .help("Headphones recommended: Aria stops talking when she hears you, so through speakers she may interrupt herself.")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .help("Aria stops talking when she hears you, so through speakers she may interrupt herself.")
 
             Button { web.toggle() } label: {
                 Image(systemName: web.live ? "stop.fill" : "mic.fill")
@@ -656,6 +783,28 @@ struct ControlBar: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
+    }
+}
+
+struct MuteButton: View {
+    let on: Bool
+    let onSymbol: String
+    let offSymbol: String
+    let title: String
+    let shortcut: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: on ? onSymbol : offSymbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(on ? Color.white : Color.secondary)
+                .frame(width: 34, height: 34)
+                .background(on ? AnyShapeStyle(Color.orange.gradient) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help("\(title) (\(shortcut))")
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 

@@ -110,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func confirmAction() { if web.confirm != nil { web.answer(true) } }
     @objc func cancelAction() { if web.confirm != nil { web.answer(false) } }
     @objc func showWelcome() { AppActions.showOnboarding() }
+    @objc func toggleMicMute() { web.toggleMicMute() }
+    @objc func toggleVoiceMute() { web.toggleVoiceMute() }
+    @objc func toggleThinking() { ui.tab = .talk; showMain(); prefs.showThinking.toggle() }
     @objc func pickPersonality(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { prefs.personality = id } }
     @objc func pickVoice(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { prefs.voice = id } }
 
@@ -184,6 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         menu.addItem(withTitle: web.live ? "End Conversation" : "Start Talking", action: #selector(toggleTalking), keyEquivalent: "")
             .target = self
+        let mm = menu.addItem(withTitle: "Mute Microphone", action: #selector(toggleMicMute), keyEquivalent: "")
+        mm.target = self; mm.state = web.micMuted ? .on : .off
+        let mv = menu.addItem(withTitle: "Mute Aria's Voice", action: #selector(toggleVoiceMute), keyEquivalent: "")
+        mv.target = self; mv.state = web.voiceMuted ? .on : .off
         menu.addItem(.separator())
         let pItem = NSMenuItem(title: "Personality", action: nil, keyEquivalent: "")
         let pMenu = NSMenu()
@@ -274,6 +281,9 @@ struct AirMain {
         talk.addItem(item("Done Talking", #selector(AppDelegate.doneTalking), "d", target: d))
         talk.addItem(item("Interrupt Aria", #selector(AppDelegate.interruptAria), ".", target: d))
         talk.addItem(.separator())
+        talk.addItem(item("Mute Microphone", #selector(AppDelegate.toggleMicMute), "m", [.command, .shift], target: d))
+        talk.addItem(item("Mute Aria's Voice", #selector(AppDelegate.toggleVoiceMute), "v", [.command, .shift], target: d))
+        talk.addItem(.separator())
         talk.addItem(item("Confirm Action", #selector(AppDelegate.confirmAction), "\r", target: d))
         talk.addItem(item("Cancel Action", #selector(AppDelegate.cancelAction), "\u{8}", target: d))
         talkItem.submenu = talk
@@ -282,6 +292,8 @@ struct AirMain {
         let view = NSMenu(title: "View")
         view.addItem(item("Talk", #selector(AppDelegate.showTalk), "1", target: d))
         view.addItem(item("History", #selector(AppDelegate.showHistory), "2", target: d))
+        view.addItem(.separator())
+        view.addItem(item("Show Thinking", #selector(AppDelegate.toggleThinking), "t", [.command, .option], target: d))
         viewItem.submenu = view
 
         let winItem = NSMenuItem(); main.addItem(winItem)
@@ -291,5 +303,18 @@ struct AirMain {
         winItem.submenu = win
         NSApp.windowsMenu = win
         return main
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// Checkmarks for the toggles in the menus.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(toggleMicMute): item.state = web.micMuted ? .on : .off
+        case #selector(toggleVoiceMute): item.state = web.voiceMuted ? .on : .off
+        case #selector(toggleThinking): item.state = prefs.showThinking ? .on : .off
+        default: break
+        }
+        return true
     }
 }

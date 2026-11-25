@@ -106,6 +106,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// Show thinking: this turn's reasoning text and the session's activity trace.
     @Published private(set) var trace: [TraceItem] = []
     @Published private(set) var research: ResearchProgress?
+    /// Mute: the mic (nothing captured or transcribed; the session stays open) and Aria's voice
+    /// (captions only). Not remembered across launches: Air always starts unmuted.
+    @Published private(set) var micMuted = false
+    @Published private(set) var voiceMuted = false
     private var loadedPort: Int?
     private var statusTimer: Timer?
     private var ariaOpen = false
@@ -196,7 +200,21 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         guard engineReady, !live else { return }
         turns = []
         error = nil
+        applyMutes()
         js("window.airStart && window.airStart()")
+    }
+    func setMicMuted(_ on: Bool) { micMuted = on; if on { micLevel = 0 }; applyMutes() }
+    func setVoiceMuted(_ on: Bool) { voiceMuted = on; if on { outLevel = 0 }; applyMutes() }
+    func toggleMicMute() { setMicMuted(!micMuted) }
+    func toggleVoiceMute() { setVoiceMuted(!voiceMuted) }
+    private func applyMutes() {
+        js("window.airMuteMic && window.airMuteMic(\(micMuted)); window.airMuteVoice && window.airMuteVoice(\(voiceMuted))")
+    }
+    /// A typed turn (works with the mic muted).
+    func say(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard live, !t.isEmpty else { return }
+        js("window.airSay && window.airSay(\(Self.json(["t": t]))['t'])")
     }
     func stop() { js("window.airStop && window.airStop()") }
     func toggle() { live ? stop() : start() }
@@ -247,6 +265,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         switch type {
         case "ready":
             engineReady = true
+            applyMutes()
         case "levels":
             micLevel = body["mic"] as? Double ?? 0
             outLevel = body["out"] as? Double ?? 0

@@ -14,6 +14,7 @@
   const cfg = Object.assign({ voice: 'af_heart', persona: '', personality: '', think: false, web: true }, window.airConfig || {});
   let ctx = null, ws = null, mic = null, capture = null, player = null, src = null, live = false;
   let lastLevelPost = 0, micLevel = 0, outLevel = 0, previewAudio = null;
+  let micMuted = false, voiceMuted = false;
 
   const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
   const text = (data) => new TextDecoder().decode(data.slice(1));
@@ -52,7 +53,7 @@
         const pcm = new Int16Array(ev.data.slice(1));
         const f = new Float32Array(pcm.length);
         for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
-        if (player) player.port.postMessage(f.buffer, [f.buffer]);
+        if (player && !voiceMuted) player.port.postMessage(f.buffer, [f.buffer]);
       }
       else if (kind === 2) post({ type: 'aria', text: text(data) });
       else if (kind === 3) post({ type: 'error', message: text(data) });
@@ -71,6 +72,7 @@
     src = ctx.createMediaStreamSource(mic);
     capture = new AudioWorkletNode(ctx, 'air-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
     capture.port.onmessage = (e) => {
+      if (micMuted) { micLevel = 0; postLevels(); return; }   // muted: nothing is sent or transcribed
       micLevel = e.data.level; postLevels();
       if (ws && ws.readyState === 1) {
         const body = new Uint8Array(e.data.pcm);
@@ -82,6 +84,9 @@
     player = new AudioWorkletNode(ctx, 'air-player', { numberOfInputs: 0, outputChannelCount: [2] });
     player.port.onmessage = (e) => { outLevel = e.data.level; postLevels(); };
     player.connect(ctx.destination);
+    if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
+    sendJSON({ type: 'mic_muted', on: micMuted });
+    sendJSON({ type: 'voice_muted', on: voiceMuted });
     post({ type: 'state', state: 'live' });
   }
 
@@ -99,6 +104,16 @@
 
   const sendJSON = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
   window.airSetConfig = (c) => { Object.assign(cfg, c || {}); sendJSON({ type: 'show_thinking', on: !!cfg.showThinking }); };
+  window.airMuteMic = (on) => {
+    micMuted = !!on;
+    if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
+    sendJSON({ type: 'mic_muted', on: micMuted });
+  };
+  window.airMuteVoice = (on) => {
+    voiceMuted = !!on;
+    if (voiceMuted && player) player.port.postMessage('reset');
+    sendJSON({ type: 'voice_muted', on: voiceMuted });
+  };
   window.airStart = () => start();
   window.airStop = () => stop(false);
   window.airEndTurn = () => sendJSON({ type: 'end_turn' });

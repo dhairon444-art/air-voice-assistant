@@ -86,8 +86,15 @@ enum ScreenLook {
                     "error": "That window belongs to \(f.app), which is on your excluded list, so I won't look at it."]
         }
         if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
-            return ["ok": false, "error": "I've asked macOS for Screen Recording permission. Please allow Air in the dialog or in System Settings, Privacy & Security, Screen Recording, then ask me again."]
+            // Ask macOS only once; after that, explain where to turn it on (no repeated system prompts).
+            if !UserDefaults.standard.bool(forKey: "airScreenRequested") {
+                UserDefaults.standard.set(true, forKey: "airScreenRequested")
+                CGRequestScreenCaptureAccess()
+                return ["ok": false, "permission": "Screen Recording",
+                        "error": "I've asked macOS for Screen Recording permission. Please allow Air in the dialog, then ask me again."]
+            }
+            return ["ok": false, "permission": "Screen Recording",
+                    "error": "Air doesn't have Screen Recording permission. Turn it on in System Settings, Privacy & Security, Screen & System Audio Recording, Air; then ask me again."]
         }
         let front = frontWindow()
         let frontApp = front.flatMap { NSRunningApplication(processIdentifier: $0.pid) }

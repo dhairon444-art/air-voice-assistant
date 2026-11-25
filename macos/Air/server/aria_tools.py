@@ -49,8 +49,14 @@ TOOLS = [
     _fn("append_to_note", "Append text to a note in the Air Obsidian vault (creates it if missing).",
         {"title": S, "content": S}, ["title", "content"]),
     # files
-    _fn("find_files", "Find files or folders by name with Spotlight.", {"query": S}, ["query"]),
-    _fn("open_file", "Open a file or folder (path from find_files) in its default app.", {"path": S}, ["path"]),
+    _fn("find_files", "Find the user's files or folders with Spotlight, by name or by words inside documents "
+        "(e.g. 'resume', 'tax return 2025').", {"query": S}, ["query"]),
+    _fn("read_file", "Read the text of a local document (PDF, Word, Pages, RTF, text, Markdown, CSV) to answer "
+        "questions about it. Use find_files first to get the path.", {"path": S}, ["path"]),
+    _fn("read_browser_tabs", "List the tabs open in the user's browsers (Safari, Chrome, Arc, Tabbit, Brave, Edge), "
+        "active tab first, with titles and links. Then use read_page on a tab's url to see what's on it."),
+    _fn("open_file", "Open a file or folder (path from find_files) in its default app so the user can see it. "
+        "This does not let you read it: to answer questions about a document, use read_file.", {"path": S}, ["path"]),
     _fn("reveal_in_finder", "Show a file or folder in Finder.", {"path": S}, ["path"]),
     # system
     _fn("get_date_time", "Current date and time. Use it whenever the user asks the time."),
@@ -127,8 +133,11 @@ ON_HOLD = {
     "look_at_screen": "Looking at your screen.",
     "look_at_image": "Let me look at that image.",
     "web_search": "Let me check that.",
-    "research": "Let me research that. It takes about thirty seconds.",
+    "research": "Let me research that. It takes about fifteen seconds.",
     "read_page": "Let me read it.",
+    "read_file": "Let me read it.",
+    "read_browser_tabs": "Let me look at your browser.",
+    "find_files": "Let me search for that.",
     "extract_page": "Let me pull that out.",
     "get_video_transcript": "Let me get the transcript.",
     "web_search_and_open": "Let me find it.",
@@ -137,13 +146,26 @@ ON_HOLD = {
     "reminder_lists": "Let me look at your reminders.",
     "search_conversations": "Let me look through our past conversations.",
     "read_conversation": "Let me find that conversation.",
-    "find_files": "Let me search for that.",
     "mail_unread": "Let me check your mail.",
     "messages_unread": "Let me check your messages.",
     "list_shortcuts": "Let me see your shortcuts.",
 }
 
 TOOL_GUIDE = (
+    "WHAT YOU CAN DO. With your tools you can: open, switch and quit apps; read and change the "
+    "calendar and reminders; search, read and open the user's files and documents (find_files, then "
+    "read_file or open_file); see the tabs open in their browser and read any page (read_browser_tabs, "
+    "read_page); search and research the web; look at their screen or an image when they ask; read "
+    "and write notes in the Air vault and search past conversations; control volume and music; run "
+    "Apple Shortcuts; read and send mail and messages; save results as Excel, Word, CSV or a note. "
+    "NEVER say 'I can't' or 'I don't have access' for something a tool can do: call the tool. If a "
+    "tool says a permission is missing, say which permission and how to allow it, for example: "
+    "'I need Screen Recording permission: System Settings, Privacy and Security, Screen Recording, "
+    "turn on Air.' If something is truly impossible, say exactly why in one sentence and offer the "
+    "closest thing you can do. When the user mentions their own document (my resume, my CV, my "
+    "report, that PDF), find it with find_files and read it with read_file before answering; never "
+    "ask them to paste or describe it first. 'Open the one you mentioned' means open it now: "
+    "open_source with its number, web_search_and_open with its name, or open_file for a local file. "
     "You can act on the user's Mac with the provided tools: apps, calendar, reminders, the Air "
     "notes vault, files, volume, music, Apple Shortcuts, mail and messages. Use a tool whenever "
     "the user asks for something a tool can do; never pretend you did something without a tool. "
@@ -265,6 +287,36 @@ def parse_tool_calls(text: str) -> list[dict]:
     return calls
 
 
+REFUSAL = re.compile(
+    r"\b(i\s*(can't|cannot|can not|am not able to|'m not able to|am unable to|'m unable to|don't have (access|the ability))|"
+    r"as an ai\b|i'm (just )?an ai\b|i'm (not allowed|restricted)|i am (not allowed|restricted)|"
+    r"i('m| am) qwen|developed by alibaba|i('m| am) (gemma|a google))", re.I)
+
+
+_SOURCE_CLAIM = re.compile(
+    r"\b(i (just )?(read|saw|found) (on|in|that (study|report|article|story|paper)|about|an? (report|article|study|post)|the news|online|somewhere)\b|"
+    r"i (just )?(looked (it |that )?up|searched|checked online)\b|"
+    r"(web )?search (shows|confirms|results? (show|say))|according to (my|the) search|"
+    r"i('ve| have) (just )?(read|seen|found)\b|(sources?|reports?) (say|show|confirm)s?\b)", re.I)
+
+
+def claims_source(text: str) -> bool:
+    """A reply citing a search or reading; only allowed when a web tool ran this turn."""
+    return bool(_SOURCE_CLAIM.search(text or ""))
+
+
+SOURCE_NUDGE = ("(System note for the assistant, not from the user: you cited a search, a source or something "
+                "you read, but no web tool ran. Call web_search now if a source matters, or answer again without "
+                "claiming any source, search or reading.)")
+
+
+def refusal_phrase(text: str) -> str | None:
+    """The refusal or identity-slip phrase in a reply, for the log (to tell capability gaps from
+    model safety refusals)."""
+    m = REFUSAL.search(text or "")
+    return m.group(0) if m else None
+
+
 ACTION_TOOLS = NEEDS_CONFIRMATION | {"open_app", "switch_to_app", "open_file", "reveal_in_finder", "music_control",
                                      "open_url", "web_search_and_open", "open_source", "save_as"}
 
@@ -326,9 +378,15 @@ _CLAIM = re.compile(
     r"|\ball (done|set)\b", re.I)
 
 
+_CLAIM2 = re.compile(
+    r"\b(it'?s|it is|that'?s|they'?re|they are) (been )?(added|saved|set|scheduled|created|sent|deleted|moved)\b|"
+    r"\byou'?ll (now )?(find|see) (it|them) in your (reminders|calendar|notes|vault|mail|messages)\b|"
+    r"^\W*(done|all set|all done)\W*$", re.I)
+
+
 def claims_action(text: str) -> bool:
     """The reply says something was done (past tense)."""
-    return bool(_CLAIM.search(text or ""))
+    return bool(_CLAIM.search(text or "") or _CLAIM2.search((text or "").strip()))
 
 
 HONEST = "Sorry, I haven't actually done that. Could you ask me again?"

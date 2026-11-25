@@ -196,7 +196,8 @@ class WebSession:
                 compact.append({"n": len(compact) + 1, "site": (urlparse(r_["url"]).hostname or "").removeprefix("www."),
                                 "text": r_["snippet"][:220]})
         return {"ok": True, "summary": f"{len(sources)} sources in {ms:.0f} ms", "sources": compact,
-                "note": "Answer from these; say briefly what it's based on."}
+                "note": (f"Today is {datetime.now().strftime('%d %B %Y')}; these results are current and may be newer than "
+                         "your training data, so trust them over memory. Answer from these; say briefly what it's based on.")}
 
     def open_url(self, url: str) -> dict:
         if not re.match(r"^https?://", url or ""):

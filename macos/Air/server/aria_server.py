@@ -22,6 +22,8 @@ WebSocket protocol:
   client -> server  text JSON {"type":"confirm","answer":"yes"|"no"}  tapped Confirm / Cancel
                     text JSON {"type":"say","text":"..."}            a typed turn
                     text JSON {"type":"show_thinking","on":true}     keep the Thinking section in the note
+                    text JSON {"type":"mic_muted","on":true}         drop the turn being heard
+                    text JSON {"type":"voice_muted","on":true}       captions only, no speech
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_pro
 from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
-from aria_tools import (VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (refusal_phrase, claims_source, SOURCE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -69,6 +71,15 @@ SPOKEN_STYLE = (
     "small mistakes; infer what they meant. Keep each reply to about three to six sentences "
     "so the conversation stays a back-and-forth; go longer only when the user asks for detail."
 )
+# Applies to every personality (the personality text comes first, this follows it).
+ANSWER_FIRST = (
+    "Answer the question the user actually asked, first and directly, in the terms they asked it. For "
+    "topics like astrology, tarot, religion, fiction, games or hypotheticals, give the answer within "
+    "that frame (for example the traditional astrological reading), then add at most one short honest "
+    "note if it matters, such as 'that's the traditional reading; there's no scientific evidence for "
+    "it'. Never lecture, moralise or refuse to engage with an ordinary adult topic. Correcting a false "
+    "factual claim still comes first when the user states one as fact."
+)
 # The five best Kokoro voices by Kokoro's own quality grades (VOICES.md): A, A-, B-, B-, C+.
 VOICES = ["af_heart", "af_bella", "af_nicole", "bf_emma", "af_sarah"]
 PREVIEW_TEXT = "Hi, I'm Aria. This is how I sound when we talk. Ask me anything, and I'll tell you straight."
@@ -83,6 +94,14 @@ SYCOPHANTIC_OPENER = re.compile(
     r"good question|what a great (question|point)|good point|great point|excellent (question|point))[\s,.!:;\u2014-]*",
     re.I)
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
+
+
+def model_name(repo: str) -> str:
+    """'mlx-community/Qwen3-4B-Instruct-2507-4bit' -> 'Qwen3 4B Instruct 2507 (4-bit)'."""
+    n = repo.split("/")[-1]
+    q = re.search(r"-(\d)bit$", n)
+    n = re.sub(r"-\dbit$", "", n).replace("-", " ")
+    return n + (f" ({q.group(1)}-bit)" if q else "")
 
 
 def to_ascii_quotes(s: str) -> str:
@@ -225,7 +244,10 @@ def main() -> None:
         """Constant across sessions (with the tool schema it is ~2.6k tokens, KV-cached)."""
         today = time.strftime("%A %d %B %Y")
         tz = time.strftime("%Z")
-        return (SPOKEN_STYLE + ("\n\n" + TOOL_GUIDE if args.tools else "")
+        identity = (f"You are Aria, the user's assistant in the Air app. Never say you are Qwen, Gemma, or made "
+                    f"by Alibaba or Google. If asked what model you run on, say: 'I'm Aria, running on "
+                    f"{model_name(args.llm)} locally on your Mac.'")
+        return (SPOKEN_STYLE + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + f"\n\nToday is {today} (time zone {tz}).")
 
     def build_messages(persona: str) -> list[dict]:
@@ -394,6 +416,12 @@ def main() -> None:
                     item = mic_q.get(timeout=0.2)
                 except queue.Empty:
                     continue
+                if isinstance(item, str) and item == "MUTE":  # mic muted: drop whatever was being heard
+                    utter.clear()
+                    pre.clear()
+                    turn.update(speaking=False, speech_ms=0.0, silence_ms=0.0)
+                    buf = np.zeros(0, np.float32)
+                    continue
                 if isinstance(item, str):  # "END": manual end of turn
                     if utter or turn["speaking"]:
                         end_turn(manual=True)
@@ -518,8 +546,9 @@ def main() -> None:
                 return ("(Offline right now: web tools are unavailable. Answer from your own knowledge; for "
                         "factual claims, mention briefly that you couldn't verify online.)")
             if web_on:
-                return ("(Online: for factual claims such as facts, figures, dates, people or recent events, "
-                        "call web_search first, then say briefly what the answer is based on.)")
+                return ("(Online: for factual claims about the world such as facts, figures, dates, people or "
+                        "recent events, call web_search first, then say briefly what the answer is based on. "
+                        "For the user's own files, screen, browser, calendar or Mac, use those tools instead.)")
             return "(Online lookups are turned off; use web tools only if the user explicitly asks.)"
 
         def look(name: str, a: dict) -> dict:
@@ -549,10 +578,28 @@ def main() -> None:
                 event(t="file", path=kept["saved"])
             return res
 
+        OWN_DOC = re.compile(r"\bmy (resume|résumé|cv|cover letter|report|essay|thesis|assignment|document|doc|file|pdf|"
+                             r"notes|draft|portfolio|spreadsheet|slides|deck)\b", re.I)
+
+        RESEARCH_ASK = re.compile(r"^\W*(please\s+)?(can you\s+|could you\s+)?(do (a |some )?(deep |quick )?research|research|"
+                                  r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
+
+        NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
+
         def with_recall(text_: str) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
             the user message, after the cached prefix, so the KV cache stays valid."""
             hint = net_hint()
+            if args.tools and net.online and RESEARCH_ASK.search(text_):
+                hint = ("(The user asked for research: call the research tool with their question"
+                        + (" and deep set to true" if re.search(r"\b(deep|thorough|in-depth|in depth)\b", text_, re.I) else "")
+                        + ", not web_search.) " + hint).strip()
+            if args.tools and net.online and NEWS_ASK.search(text_):
+                hint = ("(This asks about news or recent events: call web_search first and answer only from it.) "
+                        + hint).strip()
+            if args.tools and OWN_DOC.search(text_):
+                hint = ("(This is about the user's own document on this Mac: find it with find_files and read it "
+                        "with read_file, then answer.) " + hint).strip()
             hits = [h for h in memory.recall(text_) if h["name"] not in st["recalled"]]
             if not hits:
                 return f"{text_}\n\n{hint}" if hint else text_
@@ -586,7 +633,16 @@ def main() -> None:
                 if "hold" in marks and len(spoken) == marks["hold"] and "answer_start" not in marks:
                     marks["answer_start"] = time.monotonic()
                 t_tts = time.monotonic()
+                if st.get("mute_voice"):
+                    # Voice muted: captions only, no speech synthesis.
+                    if first_audio is None:
+                        first_audio = time.monotonic()
+                    send(2, (chunk + " ").encode())
+                    spoken.append(chunk)
+                    return not cancelled()
                 for res in tts.generate(chunk, voice=voice, lang_code=voice[0]):
+                    if st.get("mute_voice"):
+                        break  # muted mid-sentence: stop the audio, keep the caption
                     if cancelled():
                         return False
                     pcm = np.array(res.audio).reshape(-1)
@@ -606,7 +662,7 @@ def main() -> None:
             guard = {"hit": False}
             think_text: list[str] = []
 
-            def generate(live: bool = True, check_claims: bool = False) -> tuple[str, list[dict]]:
+            def generate(live: bool = True, check_claims: bool = False, check_sources: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
                 prompt = list(tokenizer.apply_chat_template(
@@ -702,6 +758,11 @@ def main() -> None:
                                 guard["hit"] = True
                                 live = False
                                 break
+                            if check_sources and claims_source(chunk):
+                                # Would cite a search or reading that never happened: stop here.
+                                guard["source"] = True
+                                live = False
+                                break
                             if not speak(chunk):
                                 break
                         if cancelled():
@@ -713,6 +774,8 @@ def main() -> None:
                         pass
                     elif check_claims and claims_action(buf):
                         guard["hit"] = True
+                    elif check_sources and claims_source(buf):
+                        guard["source"] = True
                     else:
                         speak(buf)
                 perf["llm_s"] += (time.monotonic() - t0) - (perf["tts_s"] - tts_before)
@@ -777,6 +840,7 @@ def main() -> None:
                 said_parts: list[str] = []
                 used_tool = False
                 nudged = False
+                src_nudged = False
                 acted = confirmed_ok
 
                 def say(text_: str) -> None:
@@ -796,8 +860,10 @@ def main() -> None:
                     # Stream live; when no action has run yet, each sentence is checked before it is
                     # spoken so a claim like "I've closed it" can't be voiced without a tool call.
                     guard["hit"] = False
+                    guard["source"] = False
                     before = len(spoken)
-                    reply_text, calls = generate(True, check_claims=bool(args.tools and not acted))
+                    reply_text, calls = generate(True, check_claims=bool(args.tools and not acted),
+                                                 check_sources=bool(args.tools and not used_tool and not src_nudged))
                     live = True
                     said_parts += spoken[before:]
                     if cancelled():
@@ -806,6 +872,12 @@ def main() -> None:
                         if not live and reply_text:
                             say(reply_text)
                     else:
+                        if guard["source"] and not src_nudged:
+                            src_nudged = True
+                            emit("TOOLCALL", f"nudge: cited a source without a web tool: {reply_text[:120]!r}")
+                            messages.append({"role": "assistant", "content": reply_text})
+                            messages.append({"role": "user", "content": SOURCE_NUDGE})
+                            continue
                         # A claim is only suspicious if no action tool actually ran in this turn.
                         suspicious = args.tools and not acted and (
                             guard["hit"] or claims_action(reply_text) or (used_tool and announces_action(reply_text)))
@@ -856,6 +928,8 @@ def main() -> None:
                     messages.append(tool_message(result))
 
                 said = " ".join(said_parts).strip()
+                if (rp := refusal_phrase(said)):
+                    emit("REFUSAL", f"{rp!r} in reply to {text[:120]!r}: {said[:240]!r}")
                 interrupted = cancelled() and not st["closed"]
                 if said:
                     recorder.add_segment((first_audio or time.monotonic()) - recorder.start_mono, "Aria",
@@ -931,6 +1005,14 @@ def main() -> None:
                         barge_in()
                     elif data.get("type") == "show_thinking":
                         show["on"] = bool(data.get("on"))
+                    elif data.get("type") == "mic_muted":
+                        if data.get("on"):
+                            mic_q.put("MUTE")
+                    elif data.get("type") == "voice_muted":
+                        st["mute_voice"] = bool(data.get("on"))
+                        if st["mute_voice"]:
+                            st["play_until"] = 0.0
+                            send(6)  # stop what's playing now
                     elif data.get("type") in ("confirm", "say"):
                         # A tapped Confirm/Cancel or a typed turn: handled like a spoken one, minus STT.
                         typed = {"yes": "Yes.", "no": "No."}.get(data.get("answer"), "") if data["type"] == "confirm" \

@@ -263,7 +263,10 @@ class Researcher:
             compact.append(item)
         out = {"ok": True, "summary": f"Researched {len(pages)} sources ({', '.join(p['domain'] for p in pages[:6])}) in {took:.0f} s",
                "sources": compact,
-               "note": ("Answer the question from these quotes in a few spoken sentences. Name the sites you rely on. "
+               "note": (f"Today is {datetime.now().strftime('%d %B %Y')}. These sources are current and may describe events "
+                        "after your training data: when they conflict with what you remember, trust the sources, never "
+                        "claim something hasn't happened yet. "
+                        "Answer the question from these quotes in a few spoken sentences. Name the sites you rely on. "
                         "If sources disagree or a claim is only in one weak source, say so. Say how sure you are. "
                         "Do not invent anything the quotes don't say.")}
         if brief:

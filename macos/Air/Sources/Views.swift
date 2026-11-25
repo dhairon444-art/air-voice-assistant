@@ -51,6 +51,12 @@ struct ContentView: View {
                             .font(.callout.weight(.medium))
                             .accessibilityLabel("Conversation is live")
                     }
+                    if ui.tab == .talk {
+                        Toggle(isOn: $prefs.showThinking) { Image(systemName: "sidebar.right") }
+                            .toggleStyle(.button)
+                            .help(prefs.showThinking ? "Hide thinking (⌥⌘T)" : "Show thinking: Aria's reasoning and activity (⌥⌘T)")
+                            .accessibilityLabel("Show thinking")
+                    }
                     Button { AppActions.openSettings(.general) } label: { Image(systemName: "gearshape") }
                         .help("Settings (⌘,)")
                         .accessibilityLabel("Settings")

@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import CoreServices
 import EventKit
 import Foundation
@@ -61,6 +62,8 @@ final class ToolRunner {
             case "append_to_note": return try writeNote(str(args, "title"), str(args, "content"), append: true)
             // files
             case "find_files": return try findFiles(str(args, "query"))
+            case "read_file": return try readFile(str(args, "path"))
+            case "read_browser_tabs": return try await browserTabs()
             case "open_file": return try openPath(str(args, "path"), reveal: false)
             case "reveal_in_finder": return try openPath(str(args, "path"), reveal: true)
             // system
@@ -491,28 +494,162 @@ final class ToolRunner {
 
     // MARK: files & system
 
-    private func findFiles(_ query: String) throws -> Result {
+    private func mdfind(_ args: [String]) throws -> [String] {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        p.arguments = ["-onlyin", NSHomeDirectory(), "-name", query]
+        p.arguments = ["-onlyin", NSHomeDirectory()] + args
         let out = Pipe()
         p.standardOutput = out
         p.standardError = Pipe()
         try p.run()
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        let all = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
-        let ranked = all.filter { !$0.contains("/Library/") && !$0.contains("/.") } + all.filter { $0.contains("/Library/") }
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+    }
+
+    private func findFiles(_ query: String) throws -> Result {
+        // File names first, then documents whose text mentions the words (e.g. "resume" -> CV.pdf).
+        var all = try mdfind(["-name", query])
+        if all.count < 5 {
+            let words = query.split(separator: " ").map { "kMDItemTextContent == \"*\($0.replacingOccurrences(of: "\"", with: ""))*\"cd" }
+            let docs = try mdfind([words.joined(separator: " && ") + " && kMDItemContentTypeTree == \"public.content\""])
+            all += docs.filter { !all.contains($0) }.prefix(20)
+        }
+        // Documents the user made come first: skip code, dependencies, caches and app data.
+        let docExt: Set<String> = ["pdf", "docx", "doc", "pages", "rtf", "txt", "md", "odt", "key", "pptx", "numbers",
+                                   "xlsx", "csv", "png", "jpg", "jpeg", "heic"]
+        let codeExt: Set<String> = ["js", "ts", "py", "swift", "json", "map", "h", "m", "c", "cpp", "rb", "go", "rs", "java",
+                                    "css", "scss", "lock", "pyc", "plist", "log"]
+        func junk(_ p: String) -> Bool {
+            let iCloud = p.contains("/Library/Mobile Documents/")
+            return p.contains("/node_modules/") || p.contains("/.") || p.contains("/site-packages/") ||
+                (p.contains("/Library/") && !iCloud) || p.contains(".app/") || p.contains("/build/") ||
+                codeExt.contains((p as NSString).pathExtension.lowercased())
+        }
+        func score(_ p: String) -> Int {
+            let ext = (p as NSString).pathExtension.lowercased()
+            let name = (p as NSString).lastPathComponent.lowercased()
+            var s = docExt.contains(ext) ? 3 : 0
+            if query.split(separator: " ").allSatisfy({ name.contains($0.lowercased()) }) { s += 2 }
+            if p.contains("/Documents/") || p.contains("/Desktop/") || p.contains("/Downloads/") || p.contains("Mobile Documents") { s += 1 }
+            return s
+        }
+        let clean = all.filter { !junk($0) }
+        let ranked = clean.enumerated().sorted { (score($0.element), -$0.offset) > (score($1.element), -$1.offset) }.map(\.element)
         let top = Array(ranked.prefix(10))
+        if top.isEmpty && !all.isEmpty { return ok("Only app or code files match \(query); no documents.") }
         return ok(top.isEmpty ? "Nothing found for \(query)." : "Found \(all.count) items; top: " +
                   top.prefix(5).map { ($0 as NSString).lastPathComponent }.joined(separator: ", "), ["paths": top])
+    }
+
+    /// Read a local document's text (read-only): PDF, Word, RTF, ODT, HTML, Pages (via its preview),
+    /// and plain text formats such as txt, md, csv and json.
+    private func readFile(_ path: String) throws -> Result {
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { throw ToolError("That file doesn't exist. Use find_files to locate it first.") }
+        let ext = url.pathExtension.lowercased()
+        var text: String?
+        switch ext {
+        case "pdf":
+            text = PDFDocument(url: url)?.string
+        case "pages", "key", "numbers":
+            // iWork files carry a PDF preview inside the package.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            p.arguments = ["-p", url.path, "QuickLook/Preview.pdf"]
+            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+            if (try? p.run()) != nil {
+                let data = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+                text = PDFDocument(data: data)?.string
+            }
+            if text == nil, let pdf = PDFDocument(url: url.appendingPathComponent("QuickLook/Preview.pdf")) { text = pdf.string }
+            if text == nil { throw ToolError("I can't read this \(ext) file's text. If you export it as PDF or Word, I can read that.") }
+        case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive":
+            text = (try? NSAttributedString(url: url, options: [:], documentAttributes: nil))?.string
+        case "xlsx", "xls":
+            throw ToolError("I can't read spreadsheets directly yet. I can open it for you, or read it if you save it as CSV.")
+        default:
+            text = (try? String(contentsOf: url, encoding: .utf8)) ?? (try? String(contentsOf: url, encoding: .isoLatin1))
+        }
+        guard let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else {
+            throw ToolError("That file has no readable text (it may be a scanned image).")
+        }
+        let clean = t.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        let limit = 3200
+        return ok("Read \(url.lastPathComponent) (\(clean.count) characters)",
+                  ["name": url.lastPathComponent, "path": url.path, "text": String(clean.prefix(limit)),
+                   "truncated": clean.count > limit])
+    }
+
+    /// Open tabs (title and URL) in Safari and Chromium-style browsers that are running; the active
+    /// tab of the frontmost (or most recently used) browser comes first.
+    private func browserTabs() async throws -> Result {
+        let browsers: [(id: String, name: String, safari: Bool)] = [
+            ("com.apple.Safari", "Safari", true), ("com.google.Chrome", "Chrome", false),
+            ("company.thebrowser.Browser", "Arc", false), ("com.tabbit-ai.Tabbit", "Tabbit", false),
+            ("com.brave.Browser", "Brave", false), ("com.microsoft.edgemac", "Edge", false),
+        ]
+        let running = browsers.filter { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.id).isEmpty }
+        guard !running.isEmpty else { throw ToolError("No supported browser is open (Safari, Chrome, Arc, Tabbit, Brave or Edge).") }
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ScreenLook.targetApp()?.bundleIdentifier
+        let ordered = running.sorted { a, _ in a.id == front }
+        var tabs: [[String: Any]] = []
+        var problems: [String] = []
+        for b in ordered {
+            do {
+                try await ensureAutomation(b.id, b.name, launch: false)
+            } catch {
+                problems.append(error.localizedDescription); continue
+            }
+            let script = b.safari ? """
+            set out to ""
+            tell application id "\(b.id)"
+              if (count of windows) is 0 then return ""
+              set out to out & "ACTIVE" & tab & (name of current tab of front window) & tab & (URL of current tab of front window) & linefeed
+              repeat with w in windows
+                repeat with t in tabs of w
+                  set out to out & "TAB" & tab & (name of t) & tab & (URL of t) & linefeed
+                end repeat
+              end repeat
+            end tell
+            return out
+            """ : """
+            set out to ""
+            tell application id "\(b.id)"
+              if (count of windows) is 0 then return ""
+              set out to out & "ACTIVE" & tab & (title of active tab of front window) & tab & (URL of active tab of front window) & linefeed
+              repeat with w in windows
+                repeat with t in tabs of w
+                  set out to out & "TAB" & tab & (title of t) & tab & (URL of t) & linefeed
+                end repeat
+              end repeat
+            end tell
+            return out
+            """
+            guard let out = try? await osa(script, timeout: 10) else { problems.append("I couldn't read \(b.name)'s tabs."); continue }
+            var activeURL = ""
+            for line in out.split(separator: "\n") {
+                let f = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                guard f.count == 3 else { continue }
+                if f[0] == "ACTIVE" { activeURL = f[2]; tabs.append(["browser": b.name, "title": f[1], "url": f[2], "active": true]) }
+                else if f[2] != activeURL || !tabs.contains(where: { ($0["url"] as? String) == f[2] }) {
+                    tabs.append(["browser": b.name, "title": f[1], "url": f[2]])
+                }
+            }
+        }
+        if tabs.isEmpty { throw ToolError(problems.first ?? "No open tabs found.") }
+        let active = tabs.first { ($0["active"] as? Bool) == true }
+        return ok("\(tabs.count) open tabs" + (active.map { "; active: \($0["title"] as? String ?? "")" } ?? ""),
+                  ["tabs": Array(tabs.prefix(40)),
+                   "note": "To see what's on a tab, call read_page with its url."])
     }
 
     private func openPath(_ path: String, reveal: Bool) throws -> Result {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         guard FileManager.default.fileExists(atPath: url.path) else { throw ToolError("That file doesn't exist.") }
         if reveal { NSWorkspace.shared.activateFileViewerSelecting([url]) } else { NSWorkspace.shared.open(url) }
-        return ok("\(reveal ? "Showed" : "Opened") \(url.lastPathComponent)")
+        return ok("\(reveal ? "Showed" : "Opened") \(url.lastPathComponent)",
+                  ["note": "This only shows it to the user. To answer questions about its content, call read_file with this path."])
     }
 
     private func battery() throws -> Result {
