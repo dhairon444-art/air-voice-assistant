@@ -518,7 +518,7 @@ struct PersonalityWizard: View {
                 }
                 Section("Who") {
                     HStack {
-                        TextField("Emoji", text: $spec.emoji).frame(width: 60)
+                        TextField("Emoji", text: $spec.emoji, prompt: Text("🙂")).labelsHidden().frame(width: 44)
                         TextField("Name", text: $spec.name)
                     }
                     TextField("Role (one line)", text: $spec.role)
