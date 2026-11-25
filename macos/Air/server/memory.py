@@ -29,6 +29,7 @@ SECTIONS = [
     ("decisions", "Decisions"),
     ("corrections", "Corrections"),
     ("open_threads", "Open threads"),
+    ("french_progress", "French progress"),
 ]
 TITLE_TO_KEY = {t.lower(): k for k, t in SECTIONS}
 
@@ -245,7 +246,7 @@ SUMMARY_PROMPT = """You maintain long-term memory for a voice assistant called A
 Read the conversation and return JSON only, no prose, with this shape:
 {{"summary": "2-3 sentences: what was discussed, decided or left open",
  "about": [], "goals": [], "preferences": [], "decisions": [], "corrections": [],
- "open_threads": [], "resolved_threads": []}}
+ "open_threads": [], "resolved_threads": [], "french_progress": []}}
 Rules:
 - Facts must be about the USER's own life, work, goals, preferences and plans, stated or clearly implied by the user. Never record what Aria said, world facts or answers to questions (e.g. facts about places or products) as facts about the user. If the conversation was only questions and answers or one-off tasks, return empty lists.
 - "goals": lasting goals the user said they have (e.g. "Run a half marathon under two hours"), not individual requests made in this conversation ("save this table").
@@ -253,6 +254,9 @@ Rules:
 - "corrections": every time the user said Aria was wrong or corrected a fact or a suggestion ("Actually...", "No, ..."), written as the correct fact ("Coach recommends 3 runs a week plus a rest day, not daily runs"); also instructions on how Aria should behave ("Be more direct").
 - "open_threads": only things the USER said they still need to do or want to come back to. Never turn Aria's own questions or suggestions into open threads.
 - "resolved_threads": items from the existing open threads below that this conversation resolved, copied verbatim.
+- "french_progress": only if this conversation was a French lesson: the user's current level ("Level: A2"), new words
+  or phrases the user practised ("Word: la gare = the station"), and mistakes the user made ("Mistake: says 'je suis 20 ans'
+  instead of 'j'ai 20 ans'"). Use [] for any other conversation.
 - Short, specific, one fact per string, written in third person ("Prefers metric units").
 - Skip anything already in the existing profile. Use [] when there is nothing new. Do not invent.
 

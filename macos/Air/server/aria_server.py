@@ -96,6 +96,22 @@ SYCOPHANTIC_OPENER = re.compile(
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
 
 
+FRENCH_VOICE = "ff_siwis"
+_FR = set("""le la les un une des je tu il elle nous vous ils elles est et ou de du que qui pas ne pour avec ce
+c'est cest bonjour merci oui non très tres au aux sur dans mais mon ma mes ton ta ça ca être etre suis es sommes
+êtes sont ai as avons avez ont voudrais veux peux s'il plaît plait comment allez bien très aussi où quand pourquoi""".split())
+_EN = set("""the a an and or of to is are was you i we they it this that with for in on not do does what how
+repeat after me say try again good great now let's lets means word""".split())
+
+
+def is_french(text: str) -> bool:
+    """Speak this sentence with the French voice? Counts French vs English function words and accents."""
+    words = re.findall(r"[a-zà-ÿ']+", text.lower())
+    fr = sum(w in _FR for w in words) + 2 * len(re.findall(r"[àâçéèêëîïôûùüÿœ]", text.lower()))
+    en = sum(w in _EN for w in words)
+    return fr > en and fr >= 2
+
+
 def model_name(repo: str) -> str:
     """'mlx-community/Qwen3-4B-Instruct-2507-4bit' -> 'Qwen3 4B Instruct 2507 (4-bit)'."""
     n = repo.split("/")[-1]
@@ -193,7 +209,7 @@ def main() -> None:
     t0 = time.time()
     emit("STATUS", "Loading speech recognition (Parakeet)")
     from mlx_audio.stt.utils import load as load_stt
-    stt = load_stt(args.stt)
+    speech = {"stt": load_stt(args.stt), "id": args.stt}
     emit("STATUS", "Loading voice (Kokoro)")
     from mlx_audio.tts.utils import load_model as load_tts
     tts = load_tts(args.tts)
@@ -207,7 +223,7 @@ def main() -> None:
     tw = time.time()
     rng = np.random.default_rng(0)
     for secs in (1.0, 2.5, 4.0):  # realistic shapes so real turns don't pay kernel compile
-        stt.generate(mx.array((rng.standard_normal(int(STT_RATE * secs)) * 0.05).astype(np.float32)))
+        speech["stt"].generate(mx.array((rng.standard_normal(int(STT_RATE * secs)) * 0.05).astype(np.float32)))
     emit("STATUS", f"Warm-up: speech recognition {time.time() - tw:.1f}s")
     tw = time.time()
     for _ in tts.generate("Hello there.", voice=args.voice, lang_code=args.voice[0]):
@@ -237,8 +253,33 @@ def main() -> None:
 
         with wavemod.open(wav_path) as w:
             a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(np.float32) / 32768.0
-        res = stt.generate(mx.array(a), chunk_duration=120.0, overlap_duration=5.0)
+        res = speech["stt"].generate(mx.array(a), chunk_duration=120.0, overlap_duration=5.0)
         return [(float(s.start), s.text.strip()) for s in getattr(res, "sentences", []) if s.text.strip()]
+
+    MULTILINGUAL_STT = "mlx-community/parakeet-tdt-0.6b-v3"
+
+    def use_stt(repo: str) -> None:
+        """Swap the speech recogniser (GPU thread). Language personalities use the multilingual
+        Parakeet v3 in place of the English v2, so RAM stays about the same; v2 returns after."""
+        if speech["id"] == repo:
+            return
+        import gc
+        t0_ = time.time()
+        speech["stt"] = None
+        gc.collect()
+        mx.clear_cache()
+        try:
+            speech["stt"], speech["id"] = load_stt(repo), repo
+        except Exception as exc:
+            emit("ERROR", f"couldn't load {repo}: {exc}; staying with {args.stt}")
+            speech["stt"], speech["id"] = load_stt(args.stt), args.stt
+        speech["stt"].generate(mx.array(np.zeros(int(STT_RATE * 1.0), np.float32)))
+        emit("MEMORY", f"speech recognition now {speech['id'].split('/')[-1]} ({time.time() - t0_:.1f}s), "
+                       f"active={mx.get_active_memory() / 1e9:.2f}GB")
+
+    def persona_language(text: str) -> str:
+        m = re.search(r"^LANGUAGE:\s*([a-z]{2})\b", text or "", re.M | re.I)
+        return m.group(1).lower() if m else "en"
 
     def base_prompt() -> str:
         """Constant across sessions (with the tool schema it is ~2.6k tokens, KV-cached)."""
@@ -545,11 +586,11 @@ def main() -> None:
         def transcribe(audio) -> str:
             rng = np.random.default_rng()
             dith = (rng.standard_normal(audio.shape[0]) * 3e-4).astype(np.float32)
-            text_ = stt.generate(mx.array(audio + dith)).text.strip()
+            text_ = speech["stt"].generate(mx.array(audio + dith)).text.strip()
             if not text_ and audio.shape[0] > STT_RATE * 0.5:
                 # Parakeet can return nothing for a very short word padded with silence: retry tighter.
                 core = audio[int(STT_RATE * 0.12): max(int(STT_RATE * 0.3), audio.shape[0] - int(STT_RATE * 0.3))]
-                text_ = stt.generate(mx.array(core + dith[: core.shape[0]])).text.strip()
+                text_ = speech["stt"].generate(mx.array(core + dith[: core.shape[0]])).text.strip()
             return text_
 
         def net_hint() -> str:
@@ -682,7 +723,8 @@ def main() -> None:
                     send(2, (chunk + " ").encode())
                     spoken.append(chunk)
                     return not cancelled()
-                for res in tts.generate(chunk, voice=voice, lang_code=voice[0]):
+                v_ = FRENCH_VOICE if lang["code"] == "fr" and is_french(chunk) else voice
+                for res in tts.generate(chunk, voice=v_, lang_code=v_[0]):
                     if st.get("mute_voice"):
                         break  # muted mid-sentence: stop the audio, keep the caption
                     if cancelled():
@@ -1022,7 +1064,11 @@ def main() -> None:
                     except OSError as exc:
                         emit("ERROR", f"autosave failed: {exc}")
 
+        lang = {"code": persona_language(persona)}
+
         def prime_session():
+            if lang["code"] != "en":
+                use_stt(MULTILINGUAL_STT)
             prime(messages)
             st["cache_tokens"] = shared["tokens"]
 
@@ -1056,6 +1102,8 @@ def main() -> None:
                             # Next reply uses it: the system prompt changes, so the KV cache re-primes once.
                             messages[0] = built
                             recorder.personality = name_
+                            lang["code"] = persona_language(new)
+                            gpu_jobs.put(lambda: use_stt(MULTILINGUAL_STT if lang["code"] != "en" else args.stt))
                             st["announce"] = name_
                             emit("STATUS", f"personality switched to {name_}")
                             trace("personality", f"Personality: {name_}")
@@ -1099,6 +1147,8 @@ def main() -> None:
                 user_words = sum(len(t.split()) for _, sp, t in recorder.segments if sp == "You")
                 if user_words >= 8:
                     gpu_jobs.put(lambda p=path: remember(p))
+            if speech["id"] != args.stt:
+                gpu_jobs.put(lambda: use_stt(args.stt))
             lats = st["latencies"]
             if lats:
                 emit("STATUS", f"session end: {len(lats)} replies, latency median "

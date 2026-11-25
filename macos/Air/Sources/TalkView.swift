@@ -247,6 +247,13 @@ struct PersonalityPopover: View {
                 }
                 .padding(.top, 4)
             }
+            if prefs.personality == "frenchtutor" {
+                Label("French sentences use the French voice; speech recognition switches to multilingual for lessons (a few seconds when a lesson starts). Feedback covers words, not accent.",
+                      systemImage: "character.bubble")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
             if prefs.personality == "freespirit" && prefs.voice != "af_bella" {
                 HStack {
                     Label("Bella is the most expressive voice for Free Spirit.", systemImage: "waveform")
