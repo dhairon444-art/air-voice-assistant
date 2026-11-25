@@ -257,7 +257,7 @@ struct MarketCard: View {
             Text(item.name).font(.headline).lineLimit(1)
             Text(item.summary).font(.callout).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
             HStack(spacing: 6) {
-                Chip(text: item.category)
+                Chip(text: item.category == "Professionals" ? (ProSpecs.spec(item.id)?.category ?? item.category) : item.category)
                 Chip(text: item.source.licence, symbol: "doc.badge.ellipsis")
                 Spacer(minLength: 0)
                 Image(systemName: "waveform").font(.caption2).foregroundStyle(.tertiary)
