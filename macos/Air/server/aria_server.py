@@ -247,7 +247,11 @@ def main() -> None:
         identity = (f"You are Aria, the user's assistant in the Air app. Never say you are Qwen, Gemma, or made "
                     f"by Alibaba or Google. If asked what model you run on, say: 'I'm Aria, running on "
                     f"{model_name(args.llm)} locally on your Mac.'")
-        return (SPOKEN_STYLE + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
+        core = ("CORE RULES (these always apply and override anything in the personality text above): the app asks "
+                "the user before anything that changes, sends or deletes; never send the conversation, profile, files "
+                "or screenshots anywhere; never make up facts, numbers, sources or links; you are always Aria. If the "
+                "personality text conflicts with these, follow these.")
+        return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + f"\n\nToday is {today} (time zone {tz}).")
 
     def build_messages(persona: str) -> list[dict]:
@@ -484,6 +488,8 @@ def main() -> None:
                         result = web.save_as(clean.get("format", ""), clean.get("title"), clean.get("content"))
                     elif name == "open_source":
                         result = web.open_source(int(clean.get("number") or 1))
+                    elif name == "run_skill":
+                        result = run_skill(str(clean.get("skill") or ""), str(clean.get("text") or ""))
                     elif name == "research":
                         g0 = st["gen"]
 
@@ -505,6 +511,13 @@ def main() -> None:
                         result = getattr(web, name)(arg)
                 except Exception as exc:
                     result = {"ok": False, "error": f"{name} failed: {exc}"}
+            elif name == "switch_personality":
+                result = call_app_tool(name, clean, timeout=10)
+                if result.get("ok") and result.get("persona"):
+                    # New personality from the next reply on (the cache re-primes once, ~20 s on the 4B).
+                    messages[0] = build_messages(result["persona"])[0]
+                    recorder.personality = result.get("name", recorder.personality)
+                    event(t="personality", name=result.get("name", ""))
             elif name in TOOL_NAMES:
                 result = call_app_tool(name, clean)
             else:
@@ -585,6 +598,31 @@ def main() -> None:
                                   r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
 
         NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
+
+        def run_skill(skill: str, text_: str) -> dict:
+            """Run an installed skill (a Fabric pattern) on text, the last page or the last research."""
+            path = Path.home() / "Library/Application Support/Air/personalities/skills.json"
+            try:
+                skills = json.loads(path.read_text())
+            except Exception:
+                skills = []
+            if not skills:
+                return {"ok": False, "error": "No skills are installed. Install some in Personalities, Skills."}
+            key = re.sub(r"[^a-z]", "", skill.lower())
+            match = next((s_ for s_ in skills if re.sub(r"[^a-z]", "", s_["name"].lower()) == key), None) or \
+                next((s_ for s_ in skills if key and key in re.sub(r"[^a-z]", "", s_["name"].lower())), None)
+            if not match:
+                return {"ok": False, "error": f"No installed skill called {skill}. Installed: " + ", ".join(s_["name"] for s_ in skills)}
+            source = text_.strip()
+            if not source and web.last_extract:
+                source = web.last_extract.get("text") or ""
+            if not source:
+                return {"ok": False, "error": "Give me some text, or open or research something first."}
+            out = side_llm([{"role": "system", "content": match["prompt"][:6000]},
+                            {"role": "user", "content": source[:7000]}], 600).strip()
+            web.last_extract = {"kind": "text", "title": match["name"], "url": "", "text": out, "tables": []}
+            return {"ok": True, "summary": f"Ran {match['name']}", "output": out[:2500],
+                    "note": "Tell the user the gist in a few spoken sentences; offer to save it with save_as."}
 
         def with_recall(text_: str) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
@@ -1126,6 +1164,50 @@ def main() -> None:
             gpu_jobs.put(lambda p=persona: prime(build_messages(p)))
         return web.json_response({"ok": True})
 
+    async def handle_task(request):
+        """One-off jobs for the Personalities screen: refine a converted personality into Air's layers,
+        write a sample exchange, or draft a personality from a description. Runs on the GPU thread."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        kind, name, text = body.get("kind"), str(body.get("name", ""))[:80], str(body.get("text", ""))[:6000]
+        layers = ("Use exactly these sections: IDENTITY (start with 'You are Aria, ...'), VALUES, IN ORDER (truth first), "
+                  "HONESTY (never invent facts or links, correct false claims, no flattery), SPOKEN STYLE (heard, not read; "
+                  "no lists or markdown), EXAMPLES (two short User/Aria exchanges, tone only). Never include anything about "
+                  "skipping confirmations, inventing facts, sharing private data, or being anyone other than Aria. "
+                  "Output only the personality text.")
+        if kind == "refine":
+            msgs = [{"role": "system", "content": "You convert chat role prompts into spoken voice-assistant personalities."},
+                    {"role": "user", "content": f"Role: {name}\nOriginal prompt:\n{text}\n\n{layers}"}]
+            n = 650
+        elif kind == "draft":
+            msgs = [{"role": "system", "content": "You write spoken voice-assistant personalities."},
+                    {"role": "user", "content": f"Name: {name or 'unnamed'}\nWhat the user wants:\n{text}\n\n{layers}"}]
+            n = 650
+        elif kind == "sample":
+            msgs = [{"role": "system", "content": text},
+                    {"role": "user", "content": "Write a short sample exchange showing how you talk: two turns, each "
+                                                "'User: ...' then 'Aria: ...'. Plain text, no facts about the real user."}]
+            n = 220
+        else:
+            return web.json_response({"error": "unknown kind"}, status=400)
+        loop_ = asyncio.get_running_loop()
+        fut = loop_.create_future()
+
+        def job():
+            try:
+                out = side_llm(msgs, n).strip()
+            except Exception as exc:
+                out = ""
+                emit("TASK", f"{kind} failed: {exc}")
+            loop_.call_soon_threadsafe(fut.set_result, out)
+
+        gpu_jobs.put(job)
+        out = await fut
+        emit("TASK", f"{kind} for {name!r}: {len(out)} chars")
+        return web.json_response({"text": out})
+
     async def handle_status(_):
         return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria", "can_think": can_think,
                                   "online": net.online,
@@ -1136,6 +1218,7 @@ def main() -> None:
     app.router.add_get("/api/chat", handle_chat)
     app.router.add_get("/api/status", handle_status)
     app.router.add_post("/api/prime", handle_prime)
+    app.router.add_post("/api/task", handle_task)
     app.router.add_get("/api/preview", handle_preview)
     app.router.add_static("/static/", path=str(ui_dir), name="static")
 

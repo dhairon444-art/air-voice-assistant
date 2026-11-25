@@ -96,6 +96,13 @@ TOOLS = [
         {"url": S}, ["url"]),
     _fn("transcribe_video_audio", "Transcribe a video without captions here on the Mac (temporary audio, deleted after).",
         {"url": S}, ["url"]),
+    _fn("run_skill", "Run one of the user's installed skills (for example Summarize, Extract Wisdom, Analyze Claims) on "
+        "some text, or on the last page, transcript or research you got. Use when the user names a skill or asks "
+        "for that kind of task on content.",
+        {"skill": S, "text": {"type": "string", "description": "the text to work on; leave empty to use the last page, transcript or research"}},
+        ["skill"]),
+    _fn("switch_personality", "Switch Aria's personality now, to one of the user's installed or built-in personalities, "
+        "when the user asks (for example 'switch to the Mentor').", {"name": S}, ["name"]),
     _fn("save_as", "Save the last transcript or extracted page (or given text) as Excel, Word, CSV, or a note in the Air vault. "
         "Files go to Documents/Air Exports and are never overwritten.",
         {"format": {"type": "string", "enum": ["xlsx", "docx", "csv", "md"]}, "title": S,
@@ -116,7 +123,7 @@ TOOLS += [
 VISION_TOOLS = {"look_at_screen", "look_at_image"}
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
-WEB_TOOLS = {"web_search", "research", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
+WEB_TOOLS = {"web_search", "research", "run_skill", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
              "get_video_transcript", "transcribe_video_audio", "save_as"}
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
@@ -133,6 +140,8 @@ ON_HOLD = {
     "look_at_screen": "Looking at your screen.",
     "look_at_image": "Let me look at that image.",
     "web_search": "Let me check that.",
+    "run_skill": "Let me work on that.",
+    "switch_personality": "Switching now.",
     "research": "Let me research that. It takes about fifteen seconds.",
     "read_page": "Let me read it.",
     "read_file": "Let me read it.",

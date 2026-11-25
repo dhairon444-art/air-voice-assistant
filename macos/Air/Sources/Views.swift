@@ -2,9 +2,15 @@ import AppKit
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case talk = "Talk", history = "History"
+    case talk = "Talk", history = "History", personalities = "Personalities"
     var id: String { rawValue }
-    var symbol: String { self == .talk ? "waveform" : "clock.arrow.circlepath" }
+    var symbol: String {
+        switch self {
+        case .talk: return "waveform"
+        case .history: return "clock.arrow.circlepath"
+        case .personalities: return "person.2.crop.square.stack"
+        }
+    }
 }
 
 /// Shared between the window, menus and shortcuts.
@@ -28,6 +34,7 @@ struct ContentView: View {
                 switch ui.tab {
                 case .talk: talkView
                 case .history: HistoryView()
+                case .personalities: MarketplaceView()
                 }
             }
         }
@@ -39,8 +46,9 @@ struct ContentView: View {
                     ForEach(Tab.allCases) { t in Label(t.rawValue, systemImage: t.symbol).tag(t) }
                 }
                 .pickerStyle(.segmented)
-                .labelStyle(.titleAndIcon)
-                .help("Switch between Talk (⌘1) and History (⌘2)")
+                .labelStyle(.titleOnly)
+                .fixedSize()
+                .help("Talk (⌘1), History (⌘2), Personalities (⌘3)")
             }
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 10) {
@@ -66,7 +74,9 @@ struct ContentView: View {
         .sheet(isPresented: $ui.showOnboarding) { OnboardingView() }
         .onChange(of: model.state) { _, s in
             switch s {
-            case .ready(let port): web.load(port: port, config: prefs.engineConfig)
+            case .ready(let port):
+                EngineTasks.port = port
+                web.load(port: port, config: prefs.engineConfig)
             default: web.unload()
             }
         }

@@ -56,7 +56,11 @@ enum Personas {
     static let customID = "custom"
     static let customStarter = "IDENTITY\nYou are Aria. Describe who Aria should be here.\n\nVALUES, IN ORDER\n1. Truth. 2. Usefulness. 3. Comfort.\n\nRULES\n- Correct me plainly when I'm wrong. Never flatter me."
     static func preset(_ id: String) -> Personality? { presets.first { $0.id == id } }
-    static func name(_ id: String) -> String { id == customID ? "Custom" : (preset(id)?.name ?? id) }
+    static func name(_ id: String) -> String {
+        if id == customID { return "Custom" }
+        if let p = preset(id) { return p.name }
+        return MainActor.assumeIsolated { Marketplace.shared.item(id)?.name } ?? id
+    }
     /// Which personality a saved persona text came from (older notes store only the text).
     static func nameForText(_ text: String) -> String {
         if let p = presets.first(where: { $0.text == text }) { return p.name }
@@ -111,7 +115,8 @@ final class Prefs: ObservableObject {
     func text(for id: String) -> String {
         if let t = edited[id] { return t }
         if id == Personas.customID { return Personas.customStarter }
-        return Personas.preset(id)?.text ?? ""
+        if let p = Personas.preset(id) { return p.text }
+        return MainActor.assumeIsolated { Marketplace.shared.text(for: id) } ?? ""
     }
     func setText(_ t: String, for id: String) {
         if let p = Personas.preset(id), p.text == t { edited.removeValue(forKey: id) } else { edited[id] = t }

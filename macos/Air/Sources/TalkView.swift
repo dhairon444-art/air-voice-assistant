@@ -6,6 +6,8 @@ import SwiftUI
 enum AppActions {
     static var openSettings: (SettingsTab) -> Void = { _ in }
     static var showOnboarding: () -> Void = {}
+    static var showMarketplace: () -> Void = {}
+    static var showTalk: () -> Void = {}
 }
 
 // MARK: - Talk screen
@@ -216,12 +218,20 @@ struct StatusChip: View {
 
 struct PersonalityPopover: View {
     @EnvironmentObject var prefs: Prefs
+    @ObservedObject private var market = Marketplace.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Personality").font(.headline).padding(.bottom, 4)
-            ForEach(Personas.presets) { p in
+            ForEach(Personas.presets.filter { !market.hiddenBuiltins.contains($0.id) }) { p in
                 ChoiceRow(title: p.name, subtitle: p.summary, selected: prefs.personality == p.id) {
                     prefs.personality = p.id
+                }
+            }
+            ForEach(market.installedPersonalities.prefix(12)) { it in
+                ChoiceRow(title: "\(it.emoji) \(it.name)\(market.favourites.contains(it.id) ? " ★" : "")",
+                          subtitle: it.summary, selected: prefs.personality == it.id) {
+                    prefs.personality = it.id
+                    market.markUsed(it.id)
                 }
             }
             ChoiceRow(title: "Custom", subtitle: "Your own text", selected: prefs.personality == Personas.customID) {
@@ -237,7 +247,11 @@ struct PersonalityPopover: View {
                 .padding(.top, 4)
             }
             Divider().padding(.vertical, 4)
-            Button("Edit personalities…") { AppActions.openSettings(.personality) }
+            HStack {
+                Button("Browse personalities…") { AppActions.showMarketplace() }
+                Spacer()
+                Button("Edit…") { AppActions.openSettings(.personality) }
+            }
                 .buttonStyle(.link)
         }
         .padding(14)
@@ -775,7 +789,7 @@ struct ControlBar: View {
                 if web.state == .speaking {
                     Button { web.interrupt() } label: { Label("Interrupt", systemImage: "hand.raised") }
                         .help("Stop Aria and listen (Space)")
-                } else if web.live && (web.state == .listening || web.state == .hearing) {
+                } else if web.live && !web.micMuted && (web.state == .listening || web.state == .hearing) {
                     Button { web.endTurn() } label: { Label("Done talking", systemImage: "return") }
                         .help("End your turn now instead of waiting for the pause (Space)")
                 }

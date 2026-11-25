@@ -64,6 +64,7 @@ final class ToolRunner {
             case "find_files": return try findFiles(str(args, "query"))
             case "read_file": return try readFile(str(args, "path"))
             case "read_browser_tabs": return try await browserTabs()
+            case "switch_personality": return try await switchPersonality(str(args, "name"))
             case "open_file": return try openPath(str(args, "path"), reveal: false)
             case "reveal_in_finder": return try openPath(str(args, "path"), reveal: true)
             // system
@@ -176,7 +177,11 @@ final class ToolRunner {
 
     // MARK: helpers
 
-    struct ToolError: Error { let message: String; init(_ m: String) { message = m } }
+    struct ToolError: LocalizedError {
+        let message: String
+        init(_ m: String) { message = m }
+        var errorDescription: String? { message }
+    }
 
     private func ok(_ summary: String, _ extra: Result = [:]) -> Result {
         var r: Result = ["ok": true, "summary": summary]
@@ -542,6 +547,22 @@ final class ToolRunner {
                   top.prefix(5).map { ($0 as NSString).lastPathComponent }.joined(separator: ", "), ["paths": top])
     }
 
+    /// Switch to a built-in or installed personality by (fuzzy) name, mid-conversation.
+    @MainActor private func switchPersonality(_ name: String) throws -> Result {
+        let key = name.lowercased().replacingOccurrences(of: "the ", with: "").filter { $0.isLetter }
+        let market = Marketplace.shared
+        let choices: [(id: String, name: String)] = Personas.presets.map { ($0.id, $0.name) } +
+            market.installedPersonalities.map { ($0.id, $0.name) }
+        let hit = choices.first { $0.name.lowercased().filter(\.isLetter) == key } ??
+            choices.first { !key.isEmpty && $0.name.lowercased().filter(\.isLetter).contains(key) }
+        guard let hit, let prefs = AppDelegate.shared?.prefs else {
+            throw ToolError("I don't have a personality called \(name). Installed: " + choices.map(\.name).joined(separator: ", ") + ".")
+        }
+        prefs.personality = hit.id
+        market.markUsed(hit.id)
+        return ok("Switched to \(hit.name)", ["name": hit.name, "persona": prefs.persona])
+    }
+
     /// Read a local document's text (read-only): PDF, Word, RTF, ODT, HTML, Pages (via its preview),
     /// and plain text formats such as txt, md, csv and json.
     private func readFile(_ path: String) throws -> Result {
@@ -599,7 +620,7 @@ final class ToolRunner {
             do {
                 try await ensureAutomation(b.id, b.name, launch: false)
             } catch {
-                problems.append(error.localizedDescription); continue
+                problems.append((error as? ToolError)?.message ?? error.localizedDescription); continue
             }
             let script = b.safari ? """
             set out to ""

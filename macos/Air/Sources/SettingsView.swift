@@ -84,6 +84,7 @@ struct AppearanceSettings: View {
             } footer: {
                 Text("Colours the orb, buttons and logo. The Dock icon follows the theme while Air is open.")
             }
+            IslandSettingsSection()
             Section("Light and dark") {
                 Picker("Appearance", selection: $mode) {
                     ForEach(AppearanceMode.allCases) { Text($0.label).tag($0.rawValue) }

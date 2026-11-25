@@ -398,12 +398,16 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "research":
             state = .checking; activeTool = "research"
             turns = [Turn(speaker: .you, text: "Research whether the Great Wall is visible from space."),
-                     Turn(speaker: .aria, text: "Let me research that. It takes about thirty seconds.")]
+                     Turn(speaker: .aria, text: "Let me research that. It takes about fifteen seconds.")]
             research = ResearchProgress(step: "read", text: "Reading 6 pages: britannica.com, nasa.gov, wikipedia.org, scientificamerican.com…")
             trace = [TraceItem(kind: "heard", text: "Research whether the Great Wall is visible from space."),
                      TraceItem(kind: "call", text: "research({\"question\": \"Is the Great Wall of China visible from space?\"})"),
                      TraceItem(kind: "research", text: "Searching: Is the Great Wall of China visible from space; Great Wall visible from orbit astronaut; Great Wall space myth fact check"),
                      TraceItem(kind: "research", text: "Reading 6 pages: britannica.com, nasa.gov, wikipedia.org, scientificamerican.com, skyatnightmagazine.com, sciencefocus.com")]
+        case "muted":
+            state = .listening; turns = [you1, aria1]; micMuted = true
+        case "voicemuted":
+            state = .speaking; turns = [you1, aria1]; voiceMuted = true; outLevel = 0
         case "thinking-panel":
             state = .speaking; outLevel = 0.3
             turns = [you1, aria1]

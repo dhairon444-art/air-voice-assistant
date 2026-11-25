@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let settingsNav = SettingsNav()
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
+    var island: IslandController?
     private var statusItem: NSStatusItem?
     private var hotKeyRef: EventHotKeyRef?
     private var keyMonitor: Any?
@@ -26,9 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ScreenLook.startTracking()
         web.onSessionEnded = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
+            // "Try it" lasts one conversation: go back to the previous personality.
+            if let self, Marketplace.shared.trying != nil {
+                Marketplace.shared.trying = nil
+                if let prev = UserDefaults.standard.string(forKey: "airTryPrevious") { self.prefs.personality = prev }
+            }
         }
         AppActions.openSettings = { [weak self] tab in self?.showSettings(tab) }
         AppActions.showOnboarding = { [weak self] in self?.ui.showOnboarding = true; self?.showMain() }
+        AppActions.showMarketplace = { [weak self] in self?.ui.tab = .personalities; self?.showMain() }
+        AppActions.showTalk = { [weak self] in self?.showTalk() }
         prefs.onUIPrefsChanged = { [weak self] in self?.applyQuickAccess() }
 
         let root = ContentView()
@@ -39,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                           backing: .buffered, defer: false)
         window.title = "Air"
         window.toolbarStyle = .unified
+        window.titleVisibility = .hidden
         window.contentView = NSHostingView(rootView: root)
         window.setFrameAutosaveName("AirMain")
         if !window.setFrameUsingName("AirMain") { window.center() }
@@ -48,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         installKeyMonitor()
         applyQuickAccess()
+        island = IslandController(web: web, prefs: prefs) { [weak self] in self?.showTalk() }
+        if UserDefaults.standard.bool(forKey: "AirIslandDemo") { island?.demo = true; island?.refresh() }
 
         let args = UserDefaults.standard
         if let demo = args.string(forKey: "AirDemo") {
@@ -104,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openSettingsMenu() { showSettings(settingsNav.tab) }
     @objc func showTalk() { ui.tab = .talk; showMain() }
     @objc func showHistory() { ui.tab = .history; showMain() }
+    @objc func showPersonalities() { ui.tab = .personalities; showMain() }
     @objc func toggleTalking() { ui.tab = .talk; showMain(); web.toggle() }
     @objc func doneTalking() { web.endTurn() }
     @objc func interruptAria() { web.interrupt() }
@@ -167,8 +179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// ⌃⌥Space from anywhere: bring Air forward and start talking (or end the conversation).
     func hotKeyPressed() {
-        ui.tab = .talk
-        showMain()
+        // With the Island on, talking can happen with the main window hidden.
+        if !IslandController.enabled || !web.engineReady {
+            ui.tab = .talk
+            showMain()
+        }
         web.toggle()
     }
 
@@ -292,6 +307,7 @@ struct AirMain {
         let view = NSMenu(title: "View")
         view.addItem(item("Talk", #selector(AppDelegate.showTalk), "1", target: d))
         view.addItem(item("History", #selector(AppDelegate.showHistory), "2", target: d))
+        view.addItem(item("Personalities", #selector(AppDelegate.showPersonalities), "3", target: d))
         view.addItem(.separator())
         view.addItem(item("Show Thinking", #selector(AppDelegate.toggleThinking), "t", [.command, .option], target: d))
         viewItem.submenu = view
