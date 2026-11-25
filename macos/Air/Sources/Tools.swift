@@ -624,24 +624,26 @@ final class ToolRunner {
             }
             let script = b.safari ? """
             set out to ""
+            set sep to character id 9
             tell application id "\(b.id)"
               if (count of windows) is 0 then return ""
-              set out to out & "ACTIVE" & tab & (name of current tab of front window) & tab & (URL of current tab of front window) & linefeed
+              set out to out & "ACTIVE" & sep & (name of current tab of front window) & sep & (URL of current tab of front window) & linefeed
               repeat with w in windows
                 repeat with t in tabs of w
-                  set out to out & "TAB" & tab & (name of t) & tab & (URL of t) & linefeed
+                  set out to out & "TAB" & sep & (name of t) & sep & (URL of t) & linefeed
                 end repeat
               end repeat
             end tell
             return out
             """ : """
             set out to ""
+            set sep to character id 9
             tell application id "\(b.id)"
               if (count of windows) is 0 then return ""
-              set out to out & "ACTIVE" & tab & (title of active tab of front window) & tab & (URL of active tab of front window) & linefeed
+              set out to out & "ACTIVE" & sep & (title of active tab of front window) & sep & (URL of active tab of front window) & linefeed
               repeat with w in windows
                 repeat with t in tabs of w
-                  set out to out & "TAB" & tab & (title of t) & tab & (URL of t) & linefeed
+                  set out to out & "TAB" & sep & (title of t) & sep & (URL of t) & linefeed
                 end repeat
               end repeat
             end tell

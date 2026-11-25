@@ -597,6 +597,7 @@ def main() -> None:
         RESEARCH_ASK = re.compile(r"^\W*(please\s+)?(can you\s+|could you\s+)?(do (a |some )?(deep |quick )?research|research|"
                                   r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
 
+        BROWSER_ASK = re.compile(r"\b(my )?(browser|tabs?|safari|chrome|tabbit|arc)\b", re.I)
         NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
 
         def run_skill(skill: str, text_: str) -> dict:
@@ -635,6 +636,9 @@ def main() -> None:
             if args.tools and net.online and NEWS_ASK.search(text_):
                 hint = ("(This asks about news or recent events: call web_search first and answer only from it.) "
                         + hint).strip()
+            if args.tools and BROWSER_ASK.search(text_):
+                hint = ("(This is about the user's browser: call read_browser_tabs first, then read_page on a tab "
+                        "if needed. It needs no Screen Recording.) " + hint).strip()
             if args.tools and OWN_DOC.search(text_):
                 hint = ("(This is about the user's own document on this Mac: find it with find_files and read it "
                         "with read_file, then answer.) " + hint).strip()

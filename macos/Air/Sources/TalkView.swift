@@ -218,6 +218,7 @@ struct StatusChip: View {
 
 struct PersonalityPopover: View {
     @EnvironmentObject var prefs: Prefs
+    @EnvironmentObject var web: WebController
     @ObservedObject private var market = Marketplace.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -236,6 +237,15 @@ struct PersonalityPopover: View {
             }
             ChoiceRow(title: "Custom", subtitle: "Your own text", selected: prefs.personality == Personas.customID) {
                 prefs.personality = Personas.customID
+            }
+            if prefs.personality == "freespirit" && prefs.brain == .fast {
+                HStack {
+                    Label("Free Spirit is more reliable with the Deeper brain (fewer made-up facts).", systemImage: "cpu")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Use Deeper") { prefs.brain = .deeper }.controlSize(.small).disabled(web.live)
+                }
+                .padding(.top, 4)
             }
             if prefs.personality == "freespirit" && prefs.voice != "af_bella" {
                 HStack {
