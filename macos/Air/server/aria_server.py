@@ -21,6 +21,7 @@ WebSocket protocol:
                     0x09 + JSON                    UI event: tool start/end, confirm card, sources, saved file
   client -> server  text JSON {"type":"confirm","answer":"yes"|"no"}  tapped Confirm / Cancel
                     text JSON {"type":"say","text":"..."}            a typed turn
+                    text JSON {"type":"show_thinking","on":true}     keep the Thinking section in the note
 """
 
 from __future__ import annotations
@@ -36,12 +37,14 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent, write_index
 from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
                     transcript_of)
 from web_tools import Connectivity, WebSession
 from vision import Vision
+from research import Researcher, search as web_search_backend
 from aria_tools import (VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
@@ -277,6 +280,12 @@ def main() -> None:
     threading.Thread(target=gpu_worker_main, name="air-gpu", daemon=True).start()
     vision = Vision(emit, gpu_jobs)
 
+    def side_llm(msgs: list, max_tokens: int) -> str:
+        """A one-off generation with its own cache (for research planning and briefs). GPU thread only."""
+        chat = tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False, enable_thinking=False)
+        return "".join(r.text for r in stream_generate(lm, tokenizer, chat, max_tokens=max_tokens,
+                                                       sampler=make_sampler(temp=0.3)))
+
     async def handle_chat(request: web.Request):
         ws = web.WebSocketResponse(max_msg_size=0)
         await ws.prepare(request)
@@ -324,6 +333,14 @@ def main() -> None:
 
         def event(**payload) -> None:
             send(9, json.dumps(payload, ensure_ascii=False).encode())
+
+        show = {"on": request.query.get("showThinking") == "1"}
+
+        def trace(kind: str, text_: str) -> None:
+            """Activity trace for the Show thinking panel; kept in the note only when the panel is on."""
+            event(t="trace", kind=kind, text=str(text_)[:600])
+            if show["on"]:
+                recorder.thinking.append((time.strftime("%H:%M:%S"), kind, str(text_)[:1500]))
 
         def set_state(s: str) -> None:
             send(7, s.encode())
@@ -428,7 +445,7 @@ def main() -> None:
         def run_tool(name: str, targs: dict, confirm: str) -> dict:
             clean = {k: v for k, v in targs.items() if not k.startswith("_")}
             t = time.strftime("%H:%M:%S")
-            set_state("checking" if name in ("web_search", "read_page", "extract_page", "web_search_and_open",
+            set_state("checking" if name in ("web_search", "research", "read_page", "extract_page", "web_search_and_open",
                                              "get_video_transcript", "transcribe_video_audio") else "working")
             event(t="tool", phase="start", name=name)
             if name in VISION_TOOLS:
@@ -439,6 +456,22 @@ def main() -> None:
                         result = web.save_as(clean.get("format", ""), clean.get("title"), clean.get("content"))
                     elif name == "open_source":
                         result = web.open_source(int(clean.get("number") or 1))
+                    elif name == "research":
+                        g0 = st["gen"]
+
+                        def progress(step: str, text_: str) -> None:
+                            event(t="research", step=step, text=text_)
+                            trace("research", text_)
+
+                        deep = str(clean.get("deep", "")).lower() in ("true", "1", "yes")
+                        result = Researcher(web, side_llm, progress,
+                                            lambda: st["gen"] != g0 or st["closed"]).run(
+                            str(clean.get("question") or ""), deep=deep)
+                        if result.get("ok") and getattr(web, "last_research", None):
+                            recorder.research.append(web.last_research)
+                            emit("RESEARCH", f"{'deep ' if deep else ''}{web.last_research['seconds']}s "
+                                             f"(read {web.last_research['read_s']}s) via {web.last_research['backend']}: "
+                                             + ", ".join(p_['domain'] for p_ in web.last_research['pages']))
                     else:
                         arg = clean.get("query") or clean.get("url") or ""
                         result = getattr(web, name)(arg)
@@ -458,8 +491,10 @@ def main() -> None:
             recorder.tool_log.append({"time": t, "tool": name, "args": clean, "confirm": confirm,
                                       "result": ("ok: " if result.get("ok") else "failed: ") + str(summary)})
             emit("TOOLCALL", f"{name} {json.dumps(clean)} -> {str(summary)[:200]}")
+            trace("result", f"{name}: {str(summary)[:300]}")
             event(t="tool", phase="end", name=name, ok=bool(result.get("ok")), summary=str(summary)[:160])
             if name in WEB_TOOLS and result.get("ok") and web.last_sources:
+                trace("sources", ", ".join(urlparse(s_["url"]).hostname or s_["url"] for s_ in web.last_sources[:10]))
                 event(t="sources", items=[{"title": s_["title"], "url": s_["url"]} for s_ in web.last_sources[:6]])
             if name == "save_as" and result.get("ok") and result.get("path"):
                 event(t="file", path=result["path"])
@@ -524,6 +559,7 @@ def main() -> None:
             for h in hits:
                 st["recalled"].add(h["name"])
             emit("MEMORY", "recalled " + ", ".join(h["name"] for h in hits))
+            trace("memory", "Recalled: " + "; ".join(f"{h['date']}: {h['summary'][:120]}" for h in hits))
             notes = "\n".join(f"- {h['date']}: {h['summary']}" for h in hits)
             return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})" + (f"\n{hint}" if hint else "")
 
@@ -568,6 +604,7 @@ def main() -> None:
                 return True
 
             guard = {"hit": False}
+            think_text: list[str] = []
 
             def generate(live: bool = True, check_claims: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
@@ -595,6 +632,8 @@ def main() -> None:
                 tts_before = perf["tts_s"]
                 segments = [feed]
                 think_tokens = 0
+                think_buf: list[str] = []
+                think_flush = [time.monotonic()]
                 while segments:
                     seg = segments.pop(0)
                     for resp in stream_generate(lm, tokenizer, seg, max_tokens=args.max_tokens,
@@ -631,6 +670,15 @@ def main() -> None:
                             marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
                         if in_think:
                             closer = next((c for c in THINK_CLOSE if c in piece), None)
+                            thought = piece.split(closer, 1)[0] if closer else piece
+                            for o_ in THINK_OPEN:
+                                thought = thought.replace(o_, "")
+                            think_buf.append(thought)
+                            if closer or time.monotonic() - think_flush[0] > 0.15:
+                                event(t="thought", text="".join(think_buf))
+                                think_text.append("".join(think_buf))
+                                think_buf.clear()
+                                think_flush[0] = time.monotonic()
                             if closer:
                                 in_think = False
                                 piece = piece.split(closer, 1)[1]
@@ -674,6 +722,12 @@ def main() -> None:
                 if offset is None:
                     st["cache"] = shared["cache"] = make_prompt_cache(lm)
                 shared["tokens"] = st["cache_tokens"]
+                if think_buf:
+                    event(t="thought", text="".join(think_buf))
+                    think_text.append("".join(think_buf))
+                if think_text and show["on"]:
+                    recorder.thinking.append((time.strftime("%H:%M:%S"), "reasoning", "".join(think_text).strip()[:4000]))
+                think_text.clear()
                 calls = parse_tool_calls(full)
                 text = re.sub(r"<think>.*?</think>|<\|channel>.*?<channel\|>", "", full, flags=re.S)
                 text = re.sub(r"<\|?[a-z_\"]+\|?>", "", text.split(TOOL_START, 1)[0]).strip()
@@ -692,6 +746,7 @@ def main() -> None:
                     set_state("listening")
                     return
                 send(5, text.encode())
+                trace("heard", text)
                 spoke_at = (t_end - (audio.shape[0] / STT_RATE if audio is not None else 0)) - recorder.start_mono
                 recorder.add_segment(spoke_at, "You", text)
 
@@ -776,6 +831,7 @@ def main() -> None:
                     used_tool = True
                     call = calls[0]
                     name, targs = call["name"], dict(call["arguments"])
+                    trace("call", f"{name}({json.dumps(call['arguments'], ensure_ascii=False)})")
                     messages.append({"role": "assistant", "content": reply_text,
                                      "tool_calls": [{"type": "function",
                                                      "function": {"name": name, "arguments": targs}}]})
@@ -873,6 +929,8 @@ def main() -> None:
                         mic_q.put("END")
                     elif data.get("type") == "stop_speaking":
                         barge_in()
+                    elif data.get("type") == "show_thinking":
+                        show["on"] = bool(data.get("on"))
                     elif data.get("type") in ("confirm", "say"):
                         # A tapped Confirm/Cancel or a typed turn: handled like a spoken one, minus STT.
                         typed = {"yes": "Yes.", "no": "No."}.get(data.get("answer"), "") if data["type"] == "confirm" \

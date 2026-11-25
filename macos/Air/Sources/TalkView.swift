@@ -31,6 +31,12 @@ struct TalkView: View {
             Spacer(minLength: 8)
             CaptionsView()
                 .frame(maxHeight: .infinity)
+            if prefs.showThinking {
+                ThinkingPanel()
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let card = web.confirm {
                 ConfirmCardView(card: card)
                     .padding(.horizontal, 20)
@@ -44,6 +50,7 @@ struct TalkView: View {
         }
         .animation(.snappy(duration: 0.25), value: web.confirm)
         .animation(.snappy(duration: 0.25), value: web.error)
+        .animation(.snappy(duration: 0.25), value: prefs.showThinking)
     }
 }
 
@@ -72,6 +79,13 @@ struct TalkTopBar: View {
                     AppActions.openSettings(.brain)
                 }
             }
+            StatusChip(symbol: "brain.head.profile", text: "Show thinking",
+                       tint: prefs.showThinking ? .accentColor : nil,
+                       help: prefs.showThinking ? "Showing Aria's reasoning and activity. Click to hide."
+                                                : "Show Aria's reasoning and activity (what she heard, tools, searches, sources).") {
+                prefs.showThinking.toggle()
+            }
+            .accessibilityAddTraits(prefs.showThinking ? .isSelected : [])
             StatusChip(symbol: !prefs.factCheck ? "globe.badge.chevron.backward" : (web.online ? "checkmark.seal" : "wifi.slash"),
                        text: !prefs.factCheck ? "Fact-check off" : (web.online ? "Fact-check" : "Offline"),
                        tint: prefs.factCheck && !web.online ? .orange : nil,
@@ -234,6 +248,9 @@ struct StateHero: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                if let r = web.research {
+                    ResearchProgressRow(progress: r)
+                }
                 if web.lag >= 0.8 {
                     Label(String(format: "Running %.1f s behind", web.lag), systemImage: "tortoise")
                         .font(.caption).foregroundStyle(.orange)
@@ -243,6 +260,109 @@ struct StateHero: View {
             .accessibilityLabel("Aria: \(web.state.title). \(web.state.hint)")
         }
         .animation(.easeInOut(duration: 0.2), value: web.state)
+    }
+}
+
+/// Research in progress: the current step and the time so far.
+struct ResearchProgressRow: View {
+    let progress: ResearchProgress
+    var body: some View {
+        TimelineView(.periodic(from: progress.started, by: 1)) { ctx in
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(progress.text).lineLimit(1).truncationMode(.tail)
+                Text("\(Int(ctx.date.timeIntervalSince(progress.started))) s").monospacedDigit().foregroundStyle(.tertiary)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: 460)
+            .padding(.top, 4)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Researching: \(progress.text)")
+    }
+}
+
+/// Show thinking: Aria's reasoning text (never spoken) and an activity trace of what she heard,
+/// which tools she called with what, the searches, pages and sources, and memory she recalled.
+struct ThinkingPanel: View {
+    @EnvironmentObject var web: WebController
+    @AppStorage("airThinkingExpanded") private var expanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Label("Thinking", systemImage: expanded ? "chevron.down" : "chevron.right")
+                        .font(.callout.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "Collapse thinking" : "Expand thinking")
+                Spacer()
+                Text("\(web.trace.count) steps").font(.caption).foregroundStyle(.tertiary)
+                Button("Clear") { web.clearTrace() }
+                    .buttonStyle(.borderless).font(.caption)
+                    .disabled(web.trace.isEmpty)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            if expanded {
+                Divider()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            if web.trace.isEmpty {
+                                Text("Aria's reasoning and activity will appear here: what she heard, the tools she calls, searches, pages and sources. Reasoning text needs the Deeper brain with Think first.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(web.trace) { item in
+                                TraceRow(item: item).id(item.id)
+                            }
+                        }
+                        .padding(12)
+                        .textSelection(.enabled)
+                    }
+                    .frame(height: 170)
+                    .onChange(of: web.trace.last?.text) { _, _ in
+                        if let id = web.trace.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    }
+                }
+            }
+        }
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator.opacity(0.6)))
+    }
+}
+
+struct TraceRow: View {
+    let item: TraceItem
+    private var meta: (String, String, Color) {
+        switch item.kind {
+        case "heard": return ("ear", "Heard", .blue)
+        case "reasoning": return ("brain", "Reasoning", .purple)
+        case "call": return ("hammer", "Tool call", .orange)
+        case "result": return ("checkmark.circle", "Result", .green)
+        case "research": return ("magnifyingglass", "Research", .teal)
+        case "sources": return ("link", "Sources", .teal)
+        case "memory": return ("books.vertical", "Memory", .pink)
+        default: return ("circle", item.kind.capitalized, .secondary)
+        }
+    }
+    var body: some View {
+        let (symbol, label, tint) = meta
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(tint).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption.weight(.semibold)).foregroundStyle(tint)
+                Text(item.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(item.kind == "call" ? .caption.monospaced() : .caption)
+                    .foregroundStyle(item.kind == "reasoning" ? .secondary : .primary)
+                    .italic(item.kind == "reasoning")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

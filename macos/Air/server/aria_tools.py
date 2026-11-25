@@ -72,8 +72,12 @@ TOOLS = [
     _fn("send_message", "Send an iMessage or SMS with the Messages app.",
         {"to": {"type": "string", "description": "phone number or email"}, "text": S}, ["to", "text"]),
     # web (only the query or URL leaves the Mac)
-    _fn("web_search", "Search the web (DuckDuckGo and Wikipedia) to check a fact or find something. Returns numbered sources.",
+    _fn("web_search", "Quick web search to check one fact or find something. Returns numbered sources with their sites.",
         {"query": S}, ["query"]),
+    _fn("research", "Research a question across many web pages (takes about 20-30 seconds): use for comparisons, "
+        "disputed or surprising claims, recent events, or when the user says research or look into. Set deep to true "
+        "only when the user asks for deep or thorough research.",
+        {"question": S, "deep": {"type": "boolean"}}, ["question"]),
     _fn("open_url", "Open a web link in the user's default browser.", {"url": S}, ["url"]),
     _fn("web_search_and_open", "Search the web and open the best result in the browser (e.g. 'open YouTube').",
         {"query": S}, ["query"]),
@@ -106,7 +110,7 @@ TOOLS += [
 VISION_TOOLS = {"look_at_screen", "look_at_image"}
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
-WEB_TOOLS = {"web_search", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
+WEB_TOOLS = {"web_search", "research", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
              "get_video_transcript", "transcribe_video_audio", "save_as"}
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
@@ -123,6 +127,7 @@ ON_HOLD = {
     "look_at_screen": "Looking at your screen.",
     "look_at_image": "Let me look at that image.",
     "web_search": "Let me check that.",
+    "research": "Let me research that. It takes about thirty seconds.",
     "read_page": "Let me read it.",
     "extract_page": "Let me pull that out.",
     "get_video_transcript": "Let me get the transcript.",
@@ -149,7 +154,7 @@ TOOL_GUIDE = (
     "given below; call get_date_time when you need the current time. "
     "Vision: you can look at the user's screen or an image with look_at_screen or look_at_image, "
     "but only when they ask you to look; never on your own. "
-    "Web: you can search, open, read and extract public pages and video transcripts, and save results as "
+    "Web: for one fact use web_search; for anything that needs several sources, use research. You can search, open, read and extract public pages and video transcripts, and save results as "
     "Excel, Word, CSV or a note in the vault. You cannot click, fill in forms, log in, buy, post or "
     "download files; say so if asked. When you use web results, say briefly what the answer is based on. "
     "Never guess or make up a URL: to open something you found, use open_source with its number, or "

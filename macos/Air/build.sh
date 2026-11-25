@@ -39,8 +39,16 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-echo "==> Signing (ad hoc)"
-codesign --force --deep --sign - "$APP"
+# A stable local identity keeps macOS permissions (Screen Recording, Calendar...) across rebuilds.
+# Create it once with ./make_signing_identity.sh; without it, Air is signed ad hoc.
+IDENTITY="Air Local Code Signing"
+if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+  echo "==> Signing ($IDENTITY)"
+  codesign --force --deep --sign "$IDENTITY" "$APP"
+else
+  echo "==> Signing (ad hoc; run ./make_signing_identity.sh to keep permissions across rebuilds)"
+  codesign --force --deep --sign - "$APP"
+fi
 
 if [[ "${1:-}" == "--install" ]]; then
   echo "==> Installing to /Applications/Air.app"

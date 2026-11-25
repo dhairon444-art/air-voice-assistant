@@ -174,6 +174,11 @@ struct BrainSettings: View {
                 Text("Changing the brain restarts Aria (about 15 to 30 seconds). Larger models were tested and don't fit in 24 GB alongside speech.")
             }
             Section {
+                Toggle("Show thinking", isOn: $prefs.showThinking)
+            } footer: {
+                Text("A panel on the Talk screen shows Aria's reasoning (never spoken) and what she did: what she heard, tool calls, searches, pages read, sources and memory. When on, it's also saved in the session note under a collapsed Thinking section.")
+            }
+            Section {
                 Toggle("Think first", isOn: $prefs.thinkFirst).disabled(!prefs.brain.canThink)
             } footer: {
                 Text(prefs.brain.canThink
@@ -196,7 +201,12 @@ struct OnlineSettings: View {
                         .foregroundStyle(web.online ? Color.secondary : Color.orange)
                 }
             } footer: {
-                Text("When the Mac is online, Aria checks facts with DuckDuckGo and Wikipedia and says what an answer is based on. Only the search words leave the Mac, never the conversation or your profile. Offline, she answers from what she knows and says she couldn't verify. Sources appear as chips under her reply.")
+                Text("When the Mac is online, Aria checks facts on the web and says what an answer is based on. Only the search words leave the Mac, never the conversation or your profile. Offline, she answers from what she knows and says she couldn't verify. Sources appear as chips under her reply.")
+            }
+            SearchBackendSection()
+            Section("Research") {
+                Text("Ask Aria to research something (\"research whether…\", \"compare…\") and she plans a few searches, reads 5 to 10 pages at once, and answers with the sites she used, noting where they disagree. It takes about 20 to 30 seconds; say anything to interrupt. Ask for deep research for a longer written brief you can save. The sources and quotes are kept in the session note.")
+                    .foregroundStyle(.secondary)
             }
             Section("Browser and exports") {
                 Text("Aria can open links, read public pages, pull tables and video transcripts, and save them to Documents › Air Exports. She can't log in, fill in forms, buy, post or download files.")
@@ -208,6 +218,72 @@ struct OnlineSettings: View {
                 }
             }
         }
+    }
+}
+
+/// Where web searches go. Stored in ~/Library/Application Support/Air/search.json (owner-only),
+/// which the engine reads on every search, so changes apply at once.
+struct SearchBackendSection: View {
+    enum Backend: String, CaseIterable, Identifiable {
+        case duckduckgo, searxng, brave
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .duckduckgo: return "DuckDuckGo (no key)"
+            case .searxng: return "My SearXNG server"
+            case .brave: return "Brave Search API"
+            }
+        }
+    }
+    static let url = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Air/search.json")
+
+    @State private var backend: Backend = .duckduckgo
+    @State private var searxURL = ""
+    @State private var braveKey = ""
+    @State private var loaded = false
+
+    var body: some View {
+        Section {
+            Picker("Search with", selection: $backend) {
+                ForEach(Backend.allCases) { Text($0.label).tag($0) }
+            }
+            if backend == .searxng {
+                TextField("SearXNG address", text: $searxURL, prompt: Text("http://localhost:8888"))
+                    .textContentType(.URL)
+            }
+            if backend == .brave {
+                SecureField("Brave API key", text: $braveKey)
+            }
+        } header: {
+            Text("Search engine")
+        } footer: {
+            Text(backend == .duckduckgo
+                 ? "The default. Wikipedia is used as one source among many. Reputable sites are preferred and every source shows its site."
+                 : "If this backend fails, Aria falls back to DuckDuckGo. The key is stored only on this Mac, readable only by you.")
+        }
+        .onAppear(perform: load)
+        .onChange(of: backend) { _, _ in save() }
+        .onChange(of: searxURL) { _, _ in save() }
+        .onChange(of: braveKey) { _, _ in save() }
+    }
+
+    private func load() {
+        if let d = try? Data(contentsOf: Self.url), let o = try? JSONSerialization.jsonObject(with: d) as? [String: String] {
+            backend = Backend(rawValue: o["backend"] ?? "") ?? .duckduckgo
+            searxURL = o["searxng_url"] ?? ""
+            braveKey = o["brave_key"] ?? ""
+        }
+        DispatchQueue.main.async { loaded = true }
+    }
+
+    private func save() {
+        guard loaded else { return }
+        let o = ["backend": backend.rawValue, "searxng_url": searxURL.trimmingCharacters(in: .whitespaces),
+                 "brave_key": braveKey.trimmingCharacters(in: .whitespaces)]
+        guard let d = try? JSONSerialization.data(withJSONObject: o) else { return }
+        try? FileManager.default.createDirectory(at: Self.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: Self.url.path, contents: d, attributes: [.posixPermissions: 0o600])
     }
 }
 

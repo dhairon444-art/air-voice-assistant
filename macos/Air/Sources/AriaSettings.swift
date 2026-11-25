@@ -85,6 +85,8 @@ final class Prefs: ObservableObject {
     @Published var thinkFirst: Bool { didSet { d.set(thinkFirst, forKey: "ariaThinkFirst") } }
     /// Check facts online when the Mac is online (search queries only). On by default.
     @Published var factCheck: Bool { didSet { d.set(factCheck, forKey: "ariaFactCheck") } }
+    /// Show Aria's reasoning and activity in a panel on the Talk screen (and the note). Remembered.
+    @Published var showThinking: Bool { didSet { d.set(showThinking, forKey: "airShowThinking") } }
     /// Edited personality texts by id (only those the owner changed), plus the custom text.
     @Published private var edited: [String: String] { didSet { d.set(edited, forKey: "ariaPersonalityTexts") } }
 
@@ -101,6 +103,7 @@ final class Prefs: ObservableObject {
         personality = d.string(forKey: "ariaPersonality") ?? Personas.defaultID
         thinkFirst = d.object(forKey: "ariaThinkFirst") as? Bool ?? false
         factCheck = d.object(forKey: "ariaFactCheck") as? Bool ?? true
+        showThinking = d.bool(forKey: "airShowThinking")
         // Leftovers from the earlier two-mode app (old mode, voice and persona keys).
         for old in ["ariaPersona", "persona", "voice", "mode"] { d.removeObject(forKey: old) }
     }
@@ -123,11 +126,11 @@ final class Prefs: ObservableObject {
     var engineConfig: [String: Any] {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
-         "think": thinkFirst && brain.canThink, "web": factCheck]
+         "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(brain.rawValue)"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)"
     }
 
     @Published var globalHotkey: Bool = UserDefaults.standard.object(forKey: "airGlobalHotkey") as? Bool ?? true {

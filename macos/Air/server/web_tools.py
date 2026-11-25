@@ -143,6 +143,8 @@ class WebSession:
         self.last_sources: list[dict] = []
         self.last_extract: dict | None = None
         self.log: list[dict] = []
+        self.last_results: list[dict] = []
+        self.last_research: dict | None = None
 
     # -------------------------------------------------------------- helpers ---
     def _note(self, action: str, url: str, title: str = "") -> None:
@@ -159,8 +161,10 @@ class WebSession:
             return o
         t0 = time.time()
         results, wiki = [], None
+        from research import reputation, search as backend_search
+
         with cf.ThreadPoolExecutor(2) as ex:
-            f1 = ex.submit(ddg_search, query, SEARCH_BUDGET_S)
+            f1 = ex.submit(lambda: backend_search(query, 8, SEARCH_BUDGET_S)[0])
             f2 = ex.submit(wikipedia_summary, query, SEARCH_BUDGET_S)
             done, _ = cf.wait([f1, f2], timeout=SEARCH_BUDGET_S + 0.1)
             if f1 in done and not f1.exception():
@@ -170,18 +174,27 @@ class WebSession:
         ms = (time.time() - t0) * 1000
         if not results and not wiki:
             return {"ok": False, "error": f"The search didn't come back in time ({ms:.0f} ms). Answer from your own knowledge and say you couldn't verify it online."}
-        sources = ([{"title": "Wikipedia: " + wiki["title"], "url": wiki["url"]}] if wiki else []) + \
-                  [{"title": r["title"], "url": r["url"]} for r in results]
+        # Reputable sites first (stable within the same reputation); Wikipedia is one source among many.
+        results = sorted(results, key=lambda r_: -reputation(r_["url"]))
+        if wiki:
+            results = [r_ for r_ in results if r_["url"] != wiki["url"]]
+        sources = [{"title": r["title"], "url": r["url"]} for r in results[:2]] + \
+                  ([{"title": "Wikipedia: " + wiki["title"], "url": wiki["url"]}] if wiki else []) + \
+                  [{"title": r["title"], "url": r["url"]} for r in results[2:]]
+        self.last_results = results
         self.last_sources = sources
         self._note("searched", "https://duckduckgo.com/?q=" + quote(query), query)
         for s in sources[:3]:
             self._note("source", s["url"], s["title"])
         # Keep what goes back into the prompt small: it is re-read before the spoken answer.
         compact = []
-        if wiki:
-            compact.append({"n": 1, "source": "Wikipedia: " + wiki["title"], "text": wiki["extract"][:500]})
-        for r_ in results[:3]:
-            compact.append({"n": len(compact) + 1, "source": urlparse(r_["url"]).hostname, "text": r_["snippet"][:220]})
+        for s_ in sources[:5]:
+            if wiki and s_["url"] == wiki["url"]:
+                compact.append({"n": len(compact) + 1, "site": "wikipedia.org", "text": wiki["extract"][:450]})
+            else:
+                r_ = next(x for x in results if x["url"] == s_["url"])
+                compact.append({"n": len(compact) + 1, "site": (urlparse(r_["url"]).hostname or "").removeprefix("www."),
+                                "text": r_["snippet"][:220]})
         return {"ok": True, "summary": f"{len(sources)} sources in {ms:.0f} ms", "sources": compact,
                 "note": "Answer from these; say briefly what it's based on."}
 
@@ -198,7 +211,7 @@ class WebSession:
         r = self.web_search(query)
         if not r.get("ok"):
             return r
-        best = (r["results"] or [{"url": (r.get("wikipedia") or {}).get("url")}])[0]
+        best = (getattr(self, "last_results", None) or self.last_sources or [{}])[0]
         if not best.get("url"):
             return {"ok": False, "error": "No result to open."}
         o = self.open_url(best["url"])

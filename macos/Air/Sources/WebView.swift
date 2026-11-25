@@ -65,6 +65,20 @@ struct Turn: Identifiable, Equatable {
     let time = Date()
 }
 
+/// One line of the Show thinking activity trace.
+struct TraceItem: Identifiable, Equatable {
+    let id = UUID()
+    let kind: String   // heard, reasoning, call, result, research, sources, memory
+    var text: String
+    let time = Date()
+}
+
+struct ResearchProgress: Equatable {
+    var step: String
+    var text: String
+    let started = Date()
+}
+
 struct ConfirmCard: Equatable {
     let tool: String
     let text: String
@@ -89,6 +103,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var online = true
     /// Set while Aria is capturing or reading the screen (visible indicator).
     @Published private(set) var looking: String?
+    /// Show thinking: this turn's reasoning text and the session's activity trace.
+    @Published private(set) var trace: [TraceItem] = []
+    @Published private(set) var research: ResearchProgress?
     private var loadedPort: Int?
     private var statusTimer: Timer?
     private var ariaOpen = false
@@ -237,6 +254,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             handleState(body["state"] as? String ?? "")
         case "you":
             ariaOpen = false
+            research = nil
             turns.append(Turn(speaker: .you, text: body["text"] as? String ?? ""))
         case "aria":
             appendAria(body["text"] as? String ?? "")
@@ -267,6 +285,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             state = .idle
             confirm = nil
             activeTool = nil
+            research = nil
             ariaOpen = false
             micLevel = 0; outLevel = 0
             if was { onSessionEnded?() }
@@ -307,6 +326,17 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             confirm = ConfirmCard(tool: e["tool"] as? String ?? "", text: e["text"] as? String ?? "")
         case "confirm_done":
             confirm = nil
+        case "research":
+            let step = e["step"] as? String ?? ""
+            let text = e["text"] as? String ?? ""
+            if step == "done" { research = nil } else if research == nil { research = ResearchProgress(step: step, text: text) }
+            else { research?.step = step; research?.text = text }
+        case "thought":
+            let t = e["text"] as? String ?? ""
+            if let last = trace.last, last.kind == "reasoning" { trace[trace.count - 1].text += t }
+            else if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { appendTrace("reasoning", t) }
+        case "trace":
+            appendTrace(e["kind"] as? String ?? "", e["text"] as? String ?? "")
         case "sources":
             let items = (e["items"] as? [[String: Any]] ?? []).compactMap { d -> Source? in
                 guard let u = URL(string: d["url"] as? String ?? ""), u.scheme?.hasPrefix("http") == true else { return nil }
@@ -324,6 +354,13 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         }
     }
 
+    private func appendTrace(_ kind: String, _ text: String) {
+        trace.append(TraceItem(kind: kind, text: text))
+        if trace.count > 200 { trace.removeFirst(trace.count - 200) }
+    }
+
+    func clearTrace() { trace = [] }
+
     // MARK: demo states for screenshots and UI review (-AirDemo <state>)
     func loadDemo(_ name: String) {
         engineReady = true
@@ -339,6 +376,24 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "listening": state = .listening; turns = [you1, aria1]; micLevel = 0.05
         case "hearing": state = .hearing; turns = [you1, aria1, Turn(speaker: .you, text: "Okay, and what about the pyramids")]; micLevel = 0.18
         case "thinking": state = .thinking; turns = [you1]
+        case "research":
+            state = .checking; activeTool = "research"
+            turns = [Turn(speaker: .you, text: "Research whether the Great Wall is visible from space."),
+                     Turn(speaker: .aria, text: "Let me research that. It takes about thirty seconds.")]
+            research = ResearchProgress(step: "read", text: "Reading 6 pages: britannica.com, nasa.gov, wikipedia.org, scientificamerican.com…")
+            trace = [TraceItem(kind: "heard", text: "Research whether the Great Wall is visible from space."),
+                     TraceItem(kind: "call", text: "research({\"question\": \"Is the Great Wall of China visible from space?\"})"),
+                     TraceItem(kind: "research", text: "Searching: Is the Great Wall of China visible from space; Great Wall visible from orbit astronaut; Great Wall space myth fact check"),
+                     TraceItem(kind: "research", text: "Reading 6 pages: britannica.com, nasa.gov, wikipedia.org, scientificamerican.com, skyatnightmagazine.com, sciencefocus.com")]
+        case "thinking-panel":
+            state = .speaking; outLevel = 0.3
+            turns = [you1, aria1]
+            trace = [TraceItem(kind: "heard", text: "Is the Great Wall of China visible from space?"),
+                     TraceItem(kind: "reasoning", text: "The user is asking about a well-known claim. I recall it's a myth, but I should check sources rather than rely on memory, and say how sure I am."),
+                     TraceItem(kind: "call", text: "web_search({\"query\": \"Great Wall of China visible from space\"})"),
+                     TraceItem(kind: "result", text: "web_search: 6 sources in 820 ms"),
+                     TraceItem(kind: "sources", text: "britannica.com, nasa.gov, en.wikipedia.org, scientificamerican.com"),
+                     TraceItem(kind: "memory", text: "Recalled: 2026-11-20: talked about space photography and the ISS")]
         case "checking": state = .checking; turns = [you1, Turn(speaker: .aria, text: "Let me check that.")]; activeTool = "web_search"
         case "speaking": state = .speaking; turns = [you1, aria1, you2, aria2]; outLevel = 0.16
         case "confirm":

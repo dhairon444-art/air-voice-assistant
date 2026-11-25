@@ -245,6 +245,8 @@ class SessionRecorder:
         self.tool_log: list[dict] = []   # every tool call: time, tool, args, confirmation, result
         self.web_log: list[dict] = []    # every URL searched, opened, read or saved
         self.personality = ""
+        self.research: list[dict] = []   # research briefs (question, sources with quotes)
+        self.thinking: list[tuple] = []  # (time, kind, text), only when Show thinking is on
         self.last_mono: dict[str, float] = {}
         self.lock = threading.Lock()
         self.finished = False
@@ -356,6 +358,24 @@ class SessionRecorder:
                 cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")[:160]
                 body.append(f"| {t['time']} | {t['tool']} | {cell(json.dumps(t['args'], ensure_ascii=False))} "
                             f"| {t['confirm']} | {cell(t['result'])} |")
+            body.append("")
+        for r in self.research:
+            body += [f"## {'Deep research' if r.get('deep') else 'Research'}: {r['question']}", "",
+                     f"{len(r['pages'])} sources in {r['seconds']} s via {r['backend']}. "
+                     f"Searches: {'; '.join(r['queries'])}", ""]
+            if r.get("brief"):
+                body += [r["brief"], ""]
+            for p in r["pages"]:
+                label = p["title"].replace("[", "(").replace("]", ")").replace("|", "-")
+                body.append(f"{p['n']}. [{label}]({p['url']}) ({p['domain']})")
+                for q in p["quotes"]:
+                    body.append(f"    - \"{q}\"")
+            body.append("")
+        if self.thinking:
+            body += ["> [!abstract]- Thinking", "> What Aria heard, reasoned, called and read in this session.", ">"]
+            for t_, kind, text in self.thinking:
+                body.append(f"> **{t_} {kind}:** " + text.replace("\n", " ").strip())
+                body.append(">")
             body.append("")
         if self.web_log:
             body += ["## Sources and web activity", "",
