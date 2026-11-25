@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppDelegate.shared = self
         installSignalHandlers()
         applyAppearanceOverride()
+        ScreenLook.startTracking()
         web.onSessionEnded = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.model.noteSessionsChanged() }
         }

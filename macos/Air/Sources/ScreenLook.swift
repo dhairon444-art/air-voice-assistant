@@ -29,21 +29,53 @@ enum ScreenLook {
 
     struct Front { let pid: pid_t; let app: String; let title: String; let windowID: CGWindowID }
 
-    /// The frontmost normal window that isn't Air.
+    /// The app the owner was last using other than Air (talking to Air often makes Air frontmost).
+    private static var lastOther: NSRunningApplication?
+    private static var observer: NSObjectProtocol?
+
+    /// Call once at launch so "this window" means the app the owner was in before Air.
+    static func startTracking() {
+        guard observer == nil else { return }
+        let mine = getpid()
+        if let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != mine { lastOther = f }
+        observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != mine else { return }
+            MainActor.assumeIsolated { lastOther = app }
+        }
+    }
+
+    /// The app "this window" refers to: the frontmost app, or the last app used before Air.
+    static func targetApp() -> NSRunningApplication? {
+        let mine = getpid()
+        if let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != mine { return f }
+        if let l = lastOther, !l.isTerminated { return l }
+        return nil
+    }
+
+    /// The front normal window of the target app (or, failing that, the topmost window that isn't Air).
     static func frontWindow() -> Front? {
         let mine = getpid()
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] else { return nil }
+        let target = targetApp()
+        var fallback: Front?
         for w in list {
             guard (w[kCGWindowLayer as String] as? Int) == 0,
                   let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != mine,
                   let id = w[kCGWindowNumber as String] as? CGWindowID else { continue }
             let b = w[kCGWindowBounds as String] as? [String: Any]
             if ((b?["Width"] as? Double) ?? 0) < 120 || ((b?["Height"] as? Double) ?? 0) < 80 { continue }
-            return Front(pid: pid, app: w[kCGWindowOwnerName as String] as? String ?? "",
-                         title: w[kCGWindowName as String] as? String ?? "", windowID: id)
+            let app = NSRunningApplication(processIdentifier: pid)
+            let f = Front(pid: pid, app: app?.localizedName ?? (w[kCGWindowOwnerName as String] as? String ?? ""),
+                          title: w[kCGWindowName as String] as? String ?? "", windowID: id)
+            if let target, pid == target.processIdentifier { return f }
+            if fallback == nil { fallback = f }
         }
-        return nil
+        // The target app has no visible window: still name it, so an excluded app is refused.
+        if let target { return Front(pid: target.processIdentifier, app: target.localizedName ?? "", title: "", windowID: 0) }
+        return fallback
     }
 
     static func capture(scope: String) async -> [String: Any] {
