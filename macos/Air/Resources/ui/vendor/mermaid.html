@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;padding:8px;background:transparent;font:13px -apple-system}
+#d{display:flex;justify-content:center}
+</style><script src="mermaid.min.js"></script></head><body><div id="d"></div>
+<script>
+// Rendered locally from the app bundle; no network.
+async function render(src, dark){
+  document.body.style.color = dark ? '#eee' : '#222';
+  mermaid.initialize({startOnLoad:false, theme: dark ? 'dark' : 'default', securityLevel:'strict'});
+  try { const {svg} = await mermaid.render('g' + Date.now(), src); document.getElementById('d').innerHTML = svg; }
+  catch(e){ document.getElementById('d').innerText = 'Diagram could not be drawn: ' + e; }
+  window.webkit.messageHandlers.size.postMessage(document.body.scrollHeight);
+}
+</script></body></html>

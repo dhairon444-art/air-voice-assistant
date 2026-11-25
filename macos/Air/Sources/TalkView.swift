@@ -679,6 +679,7 @@ struct TurnView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Aria said: \(turn.text)")
                 }
+                ForEach(turn.blocks) { DisplayBlockView(block: $0).padding(.leading, 24) }
                 if !turn.sources.isEmpty { SourcesRow(sources: turn.sources).padding(.leading, 24) }
                 ForEach(turn.files, id: \.self) { FileRow(url: $0).padding(.leading, 24) }
             }

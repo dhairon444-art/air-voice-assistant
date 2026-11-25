@@ -61,6 +61,7 @@ struct Turn: Identifiable, Equatable {
     var text: String
     var sources: [Source] = []
     var files: [URL] = []
+    var blocks: [DisplayBlock] = []
     var interrupted = false
     let time = Date()
 }
@@ -378,6 +379,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             }
             let i = currentAriaIndex()
             turns[i].sources = items
+        case "display":
+            let i = currentAriaIndex()
+            turns[i].blocks.append(DisplayBlock(kind: e["kind"] as? String ?? "markdown", body: e["body"] as? String ?? ""))
         case "file":
             if let p = e["path"] as? String {
                 let i = currentAriaIndex()
@@ -437,6 +441,17 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
                      TraceItem(kind: "call", text: "research({\"question\": \"Is the Great Wall of China visible from space?\"})"),
                      TraceItem(kind: "research", text: "Searching: Is the Great Wall of China visible from space; Great Wall visible from orbit astronaut; Great Wall space myth fact check"),
                      TraceItem(kind: "research", text: "Reading 6 pages: britannica.com, nasa.gov, wikipedia.org, scientificamerican.com, skyatnightmagazine.com, sciencefocus.com")]
+        case "rich":
+            state = .listening
+            var a1 = Turn(speaker: .aria, text: "I've put a comparison table on screen: the iPhone wins on video, the Pixel on zoom and price.")
+            a1.blocks = [DisplayBlock(kind: "table", body: "| Phone | Video | Zoom | Battery | Price |\n|---|---|---|---|---|\n| iPhone 17 Pro | **Best** | 8x | ~1 day | $1,099 |\n| Pixel 10 Pro | Good | **100x** | ~1 day | $999 |\n| Galaxy S26 | Good | 30x | **1.5 days** | $1,049 |")]
+            var a2 = Turn(speaker: .aria, text: "Here are the steps as a flowchart on screen. The biggest wait is the appointment.")
+            a2.blocks = [DisplayBlock(kind: "mermaid", body: "flowchart LR\n  A[Check visa type] --> B[Gather documents]\n  B --> C[Fill in the form]\n  C --> D[Pay the fee]\n  D --> E[Book appointment]\n  E --> F[Biometrics]\n  F --> G{Decision}\n  G -->|Approved| H[Travel]\n  G -->|Refused| I[Appeal or reapply]")]
+            var a3 = Turn(speaker: .aria, text: "The sources are on screen as links.")
+            a3.blocks = [DisplayBlock(kind: "links", body: "- [Apple: iPhone 17 Pro tech specs](https://www.apple.com/iphone/)\n- [MacRumors: iPhone 17 Pro vs Pixel 10 Pro](https://www.macrumors.com/)\n- [Tech Advisor camera test](https://www.techadvisor.com/)")]
+            turns = [Turn(speaker: .you, text: "Compare these three phones in a table."), a1,
+                     Turn(speaker: .you, text: "Draw the steps of applying for a visa as a flowchart."), a2,
+                     Turn(speaker: .you, text: "Give me the sources as links."), a3]
         case "muted":
             state = .listening; turns = [you1, aria1]; micMuted = true
         case "voicemuted":

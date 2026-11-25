@@ -198,7 +198,7 @@ struct IslandView: View {
     /// What the Island shows, in priority order.
     private var look: (text: String, symbol: String, tint: Color) {
         if web.error != nil && !web.live { return ("Something went wrong", "exclamationmark.triangle.fill", .orange) }
-        if web.micMuted && (web.state == .listening || web.state == .hearing) { return ("Mic muted", "mic.slash.fill", .red) }
+        if web.micMuted && (web.state == .listening || web.state == .hearing) { return ("Mic muted", "mic.slash.fill", .orange) }
         switch web.state {
         case .idle, .connecting: return ("Starting", "ellipsis", .gray)
         case .listening: return ("Listening", "waveform", .green)

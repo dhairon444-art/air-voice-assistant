@@ -42,7 +42,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent, write_index
-from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
+from memory import (Memory, add_review_to_note, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
                     transcript_of)
 from web_tools import Connectivity, WebSession
 from vision import Vision
@@ -71,6 +71,18 @@ SPOKEN_STYLE = (
     "small mistakes; infer what they meant. Keep each reply to about three to six sentences "
     "so the conversation stays a back-and-forth; go longer only when the user asks for detail."
 )
+DISPLAY_RULES = (
+    "SCREEN: the user also sees your reply under the orb. Your default is plain conversation, with no blocks. "
+    "Use a block ONLY when the content genuinely reads better that way: comparing 3 or more items on several "
+    "attributes, a process of 4 or more steps, a timeline, a hierarchy, a set of numbers, links to sources, or when "
+    "the user asks for a table, diagram or links. Never for casual chat, short answers, opinions or a single fact. "
+    "When you do, put it in ONE fenced block that is shown on screen "
+    "and never spoken: ```table with a Markdown table, ```mermaid with a Mermaid diagram (flowchart TD, timeline, "
+    "mindmap), ```links with a Markdown list of [title](url) links (only real links from tools), or ```code. "
+    "Outside the block, speak a short natural summary and say it's on screen, for example: 'I've put a comparison "
+    "table on screen: the iPhone wins on video, the Pixel on battery.' Never read the block aloud."
+)
+
 # Applies to every personality (the personality text comes first, this follows it).
 ANSWER_FIRST = (
     "Answer the question the user actually asked, first and directly, in the terms they asked it. For "
@@ -131,7 +143,30 @@ THINK_OPEN = ("<think>", "<|channel>thought")
 THINK_CLOSE = ("</think>", "<channel|>")
 
 
+DISPLAY_KINDS = ("table", "mermaid", "links", "code", "markdown")
+
+
+def extract_blocks(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split a reply into what is spoken and what is shown: fenced blocks (```table, ```mermaid,
+    ```links, ```code) and bare Markdown tables go to the screen and are never spoken."""
+    blocks: list[tuple[str, str]] = []
+
+    def take(m: re.Match) -> str:
+        kind = (m.group(1) or "markdown").strip().lower()
+        kind = kind if kind in DISPLAY_KINDS else ("code" if kind else "markdown")
+        blocks.append((kind, m.group(2).strip("\n")))
+        return " "
+    spoken = re.sub(r"```([a-zA-Z]*)[ \t]*\n?(.*?)```", take, text, flags=re.S)
+    spoken = re.sub(r"```.*$", " ", spoken, flags=re.S)  # an unfinished block is never spoken
+    table = [ln for ln in spoken.splitlines() if ln.strip().startswith("|")]
+    if len(table) >= 2:
+        blocks.append(("table", "\n".join(table)))
+        spoken = "\n".join(ln for ln in spoken.splitlines() if not ln.strip().startswith("|"))
+    return spoken, blocks
+
+
 def clean_for_speech(s: str) -> str:
+    s = extract_blocks(s)[0]
     s = re.sub(r"<think>.*?</think>", "", s, flags=re.S)
     s = re.sub(r"<\|channel>.*?<channel\|>", "", s, flags=re.S)
     s = re.sub(r"<\|?[a-z_\"]+\|?>", " ", s)  # any leftover special-token text such as <turn|>
@@ -292,7 +327,7 @@ def main() -> None:
                 "the user before anything that changes, sends or deletes; never send the conversation, profile, files "
                 "or screenshots anywhere; never make up facts, numbers, sources or links; you are always Aria. If the "
                 "personality text conflicts with these, follow these.")
-        return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
+        return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + DISPLAY_RULES + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + f"\n\nToday is {today} (time zone {tz}).")
 
     def build_messages(persona: str) -> list[dict]:
@@ -749,6 +784,30 @@ def main() -> None:
 
             guard = {"hit": False}
             think_text: list[str] = []
+            disp = {"on": False, "text": ""}
+            shown: list[tuple[str, str]] = []
+
+            def show_block(raw: str) -> None:
+                first, _, rest = raw.partition("\n")
+                tag = first.strip().lower()
+                if tag in DISPLAY_KINDS:
+                    kind, body = tag, rest
+                elif not tag:
+                    kind, body = "markdown", rest
+                elif re.fullmatch(r"[a-z0-9+#-]{1,15}", tag):
+                    kind, body = "code", rest          # ```python and the like
+                else:
+                    kind, body = "markdown", raw       # no tag: the first line is content
+                body = body.strip("\n")
+                # Trivial structure isn't worth the screen: a table needs 2+ data rows, a diagram 3+ links.
+                rows = [ln for ln in body.splitlines() if ln.strip().startswith("|") and not re.fullmatch(r"[|:\-\s]+", ln.strip())]
+                if (kind == "table" and len(rows) < 3) or (kind == "mermaid" and len(re.findall(r"--|==", body)) < 3):
+                    emit("DISPLAY", f"dropped a trivial {kind}")
+                    return
+                if body.strip():
+                    shown.append((kind, body))
+                    event(t="display", kind=kind, body=body[:20000])
+                    trace("display", f"{kind} shown on screen ({len(body)} characters)")
 
             def generate(live: bool = True, check_claims: bool = False, check_sources: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
@@ -832,6 +891,23 @@ def main() -> None:
                         if TOOL_START in buf:
                             buf, _ = buf.split(TOOL_START, 1)
                             in_tool = True
+                        # Display blocks: everything between ``` fences goes to the screen, not the voice.
+                        while live and (disp["on"] or "```" in buf):
+                            if not disp["on"]:
+                                before, buf = buf.split("```", 1)
+                                if before.strip():
+                                    speak(before)
+                                disp.update(on=True, text="")
+                            if "```" in buf:
+                                inner, buf = buf.split("```", 1)
+                                show_block(disp["text"] + inner)
+                                disp["on"] = False
+                            else:
+                                disp["text"] += buf
+                                buf = ""
+                                break
+                        if buf.endswith("`"):
+                            continue  # maybe the start of a fence: wait for more
                         if not live:
                             continue
                         while True:
@@ -933,6 +1009,9 @@ def main() -> None:
 
                 def say(text_: str) -> None:
                     before_ = len(spoken)
+                    text_, blocks_ = extract_blocks(text_)
+                    for k_, b_ in blocks_:
+                        show_block(k_ + "\n" + b_)
                     rest = text_
                     while True:
                         chunk, rest = pop_sentence(rest, first=not spoken)
@@ -1021,9 +1100,12 @@ def main() -> None:
                 if (rp := refusal_phrase(said)):
                     emit("REFUSAL", f"{rp!r} in reply to {text[:120]!r}: {said[:240]!r}")
                 interrupted = cancelled() and not st["closed"]
-                if said:
+                if said or shown:
+                    md = ""
+                    for kind_, body_ in shown:
+                        md += ("\n\n" + body_) if kind_ in ("table", "links", "markdown") else f"\n\n```{'mermaid' if kind_ == 'mermaid' else ''}\n{body_}\n```"
                     recorder.add_segment((first_audio or time.monotonic()) - recorder.start_mono, "Aria",
-                                         said + (" [interrupted]" if interrupted else ""))
+                                         said + (" [interrupted]" if interrupted else "") + md)
                 if interrupted and messages and messages[-1]["role"] == "user":
                     messages.append({"role": "assistant", "content": (said + " ...") if said else "..."})
                 if first_audio is not None:
@@ -1178,12 +1260,14 @@ def main() -> None:
             chat = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
                                                  add_generation_prompt=True, tokenize=False,
                                                  enable_thinking=False)
-            out = "".join(r.text for r in stream_generate(lm, tokenizer, chat, max_tokens=500,
+            out = "".join(r.text for r in stream_generate(lm, tokenizer, chat, max_tokens=800,
                                                           sampler=make_sampler(temp=0.2)))
             data = parse_json_object(out)
             summary = str(data.get("summary", "")).strip()
             if summary:
                 add_summary_to_note(note, summary)
+            if str(data.get("review", "")).strip():
+                add_review_to_note(note, str(data["review"]))
             n = merge_profile(vault, data, data.get("resolved_threads") or [])
             write_index(vault)
             memory.reload()

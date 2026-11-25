@@ -52,14 +52,7 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 10) {
-                    if web.live {
-                        Label("Live", systemImage: "record.circle")
-                            .foregroundStyle(.red)
-                            .labelStyle(.titleAndIcon)
-                            .font(.callout.weight(.medium))
-                            .accessibilityLabel("Conversation is live")
-                            .fixedSize()
-                    }
+                    LiveToggle()
                     if ui.tab == .talk {
                         Toggle(isOn: $prefs.showThinking) { Image(systemName: "sidebar.right") }
                             .toggleStyle(.button)
@@ -332,5 +325,45 @@ struct MetaChip: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(.quaternary.opacity(0.6), in: Capsule())
+    }
+}
+
+
+/// The toolbar's conversation toggle: "Start" when idle, a red "Live" while a conversation is open
+/// (orange "Live · Muted" with the mic muted). Same colours as the Island and the menu bar icon.
+struct LiveToggle: View {
+    @EnvironmentObject var web: WebController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        let connecting = web.state == .connecting
+        let tint: Color = web.live ? (web.micMuted ? .orange : .red) : .secondary
+        Button { web.toggle() } label: {
+            HStack(spacing: 6) {
+                if web.live {
+                    Circle().fill(tint).frame(width: 8, height: 8)
+                        .opacity(pulse ? 0.35 : 1)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+                } else {
+                    Image(systemName: connecting ? "ellipsis" : "mic.fill").font(.caption)
+                }
+                Text(web.live ? (web.micMuted ? "Live · Muted" : "Live") : (connecting ? "Connecting…" : "Start"))
+                    .font(.callout.weight(.semibold))
+            }
+            .foregroundStyle(web.live ? tint : Color.primary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(web.live ? tint.opacity(0.15) : Color.secondary.opacity(0.12), in: Capsule())
+            .overlay(Capsule().strokeBorder(web.live ? tint.opacity(0.6) : Color.clear))
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .disabled(!web.engineReady || connecting)
+        .onAppear { pulse = web.live }
+        .onChange(of: web.live) { _, l in pulse = l }
+        .help(web.live ? "Conversation is live: Aria is listening\(web.micMuted ? " (mic muted)" : ""). Click to end (Esc, ⌘T)."
+                       : "Start a conversation (Space, ⌘T, or ⌃⌥Space from anywhere)")
+        .accessibilityLabel(web.live ? "End conversation" : "Start conversation")
+        .accessibilityValue(web.live ? (web.micMuted ? "Live, mic muted" : "Live") : "Not live")
     }
 }

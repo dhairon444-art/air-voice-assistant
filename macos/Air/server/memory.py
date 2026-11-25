@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import re
 import time
@@ -246,7 +247,7 @@ SUMMARY_PROMPT = """You maintain long-term memory for a voice assistant called A
 Read the conversation and return JSON only, no prose, with this shape:
 {{"summary": "2-3 sentences: what was discussed, decided or left open",
  "about": [], "goals": [], "preferences": [], "decisions": [], "corrections": [],
- "open_threads": [], "resolved_threads": [], "french_progress": []}}
+ "open_threads": [], "resolved_threads": [], "french_progress": [], "review": ""}}
 Rules:
 - Facts must be about the USER's own life, work, goals, preferences and plans, stated or clearly implied by the user. Never record what Aria said, world facts or answers to questions (e.g. facts about places or products) as facts about the user. If the conversation was only questions and answers or one-off tasks, return empty lists.
 - "goals": lasting goals the user said they have (e.g. "Run a half marathon under two hours"), not individual requests made in this conversation ("save this table").
@@ -257,6 +258,9 @@ Rules:
 - "french_progress": only if this conversation was a French lesson: the user's current level ("Level: A2"), new words
   or phrases the user practised ("Word: la gare = the station"), and mistakes the user made ("Mistake: says 'je suis 20 ans'
   instead of 'j'ai 20 ans'"). Use [] for any other conversation.
+- "review": optional Markdown for later review, ONLY if the conversation had substance worth structuring (a
+  comparison, a plan, steps, a decision with options, research findings): 3-6 bullet key points, or a small Markdown
+  table, or a ```mermaid diagram. Use "" for casual or short conversations. Never invent anything not said.
 - Short, specific, one fact per string, written in third person ("Prefers metric units").
 - Skip anything already in the existing profile. Use [] when there is nothing new. Do not invent.
 
@@ -283,6 +287,22 @@ def parse_json_object(text: str) -> dict:
         return obj if isinstance(obj, dict) else {}
     except ValueError:
         return {}
+
+
+def add_review_to_note(note: Path, review: str) -> None:
+    """Optional structured 'Key points' section (bullets, a table or a Mermaid diagram) before the transcript."""
+    review = (review or "").strip()
+    if not review or len(review) < 20:
+        return
+    text = note.read_text(encoding="utf-8")
+    text = re.sub(r"\n## Key points\n.*?(?=\n## )", "\n", text, flags=re.S)
+    i = text.find("\n## Transcript")
+    if i < 0:
+        return
+    text = text[:i] + "\n## Key points\n\n" + review + "\n" + text[i:]
+    tmp = note.with_name("." + note.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, note)
 
 
 def add_summary_to_note(note: Path, summary: str) -> None:
