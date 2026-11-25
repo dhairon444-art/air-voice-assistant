@@ -336,8 +336,8 @@ struct StateHero: View {
     @EnvironmentObject var web: WebController
     var body: some View {
         VStack(spacing: 14) {
-            OrbView(state: web.state, mic: web.micLevel, out: web.outLevel)
-                .frame(width: 150, height: 150)
+            Orb3DView(state: web.state, mic: web.micLevel, out: web.outLevel, muted: web.micMuted, bands: web.bands)
+                .frame(width: 220, height: 220)
                 .accessibilityHidden(true)
             if let what = web.looking {
                 Label("Looking at \(what)", systemImage: "eye.fill")

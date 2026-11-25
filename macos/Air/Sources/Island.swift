@@ -234,11 +234,9 @@ struct IslandView: View {
 
     private func pill(_ l: (text: String, symbol: String, tint: Color)) -> some View {
         HStack(spacing: 8) {
-            ZStack {
-                Circle().fill(LinearGradient(colors: theme.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 22, height: 22)
-                Image(systemName: l.symbol).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-            }
+            Orb3DView(state: web.state, mic: web.micLevel, out: web.outLevel, muted: web.micMuted, fps: 15, showMesh: false)
+                .frame(width: 26, height: 26)
+                .accessibilityHidden(true)
             Text(l.text)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)

@@ -109,6 +109,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// Mute: the mic (nothing captured or transcribed; the session stays open) and Aria's voice
     /// (captions only). Not remembered across launches: Air always starts unmuted.
     @Published private(set) var micMuted = false
+    /// Eight frequency bands (0..1) of the voice being heard or spoken, for the orb mesh.
+    @Published private(set) var bands: [Double] = Array(repeating: 0, count: 8)
     @Published private(set) var voiceMuted = false
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -269,6 +271,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "levels":
             micLevel = body["mic"] as? Double ?? 0
             outLevel = body["out"] as? Double ?? 0
+            if let b = body["bands"] as? [Double], b.count == 8 { bands = b }
         case "state":
             handleState(body["state"] as? String ?? "")
         case "you":
@@ -391,6 +394,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         var aria2 = Turn(speaker: .aria, text: "Done. I saved the main table, 100 buildings with height, floors and city, as an Excel file.")
         aria2.files = [URL(fileURLWithPath: NSHomeDirectory() + "/Documents/Air Exports/World's Tallest Buildings 2026-11-25.xlsx")]
         live = name != "idle" && name != "error" && name != "offline"
+        bands = ["speaking", "listening", "hearing", "thinking-panel"].contains(name)
+            ? [0.35, 0.7, 0.9, 0.55, 0.45, 0.3, 0.5, 0.2] : Array(repeating: 0, count: 8)
         switch name {
         case "listening": state = .listening; turns = [you1, aria1]; micLevel = 0.05
         case "hearing": state = .hearing; turns = [you1, aria1, Turn(speaker: .you, text: "Okay, and what about the pyramids")]; micLevel = 0.18

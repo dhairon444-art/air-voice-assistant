@@ -23,7 +23,24 @@
     const now = performance.now();
     if (now - lastLevelPost < 60) return;        // ~16 updates a second is plenty for the orb
     lastLevelPost = now;
-    post({ type: 'levels', mic: micLevel, out: outLevel });
+    post({ type: 'levels', mic: micLevel, out: outLevel, bands: bands() });
+  }
+
+  // Eight log-spaced frequency bands (about 90 Hz to 8 kHz) of whoever is talking, 0..1, for the orb mesh.
+  let micAn = null, outAn = null, fbuf = null;
+  function bands() {
+    const an = outLevel > micLevel * 1.5 ? outAn : (micMuted ? null : micAn);
+    if (!an) return [0, 0, 0, 0, 0, 0, 0, 0];
+    if (!fbuf || fbuf.length !== an.frequencyBinCount) fbuf = new Uint8Array(an.frequencyBinCount);
+    an.getByteFrequencyData(fbuf);
+    const hz = ctx.sampleRate / 2 / fbuf.length, out = [];
+    for (let b = 0; b < 8; b++) {
+      const lo = Math.max(1, Math.floor(90 * Math.pow(2, b * 0.8) / hz)), hi = Math.max(lo + 1, Math.floor(90 * Math.pow(2, (b + 1) * 0.8) / hz));
+      let m = 0;
+      for (let i = lo; i < Math.min(hi, fbuf.length); i++) m = Math.max(m, fbuf[i]);
+      out.push(Math.max(0, (m - 90) / 165));
+    }
+    return out;
   }
 
   async function start() {
@@ -81,9 +98,11 @@
       }
     };
     src.connect(capture);
+    micAn = ctx.createAnalyser(); micAn.fftSize = 512; micAn.smoothingTimeConstant = 0.6; src.connect(micAn);
     player = new AudioWorkletNode(ctx, 'air-player', { numberOfInputs: 0, outputChannelCount: [2] });
     player.port.onmessage = (e) => { outLevel = e.data.level; postLevels(); };
     player.connect(ctx.destination);
+    outAn = ctx.createAnalyser(); outAn.fftSize = 512; outAn.smoothingTimeConstant = 0.6; player.connect(outAn);
     if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
     sendJSON({ type: 'mic_muted', on: micMuted });
     sendJSON({ type: 'voice_muted', on: voiceMuted });
@@ -97,6 +116,7 @@
     ws = null;
     for (const n of [src, capture, player]) { if (n) { try { n.disconnect(); } catch (_) {} } }
     src = capture = player = null;
+    micAn = outAn = null;
     if (mic) { mic.getTracks().forEach((t) => t.stop()); mic = null; }
     micLevel = outLevel = 0; lastLevelPost = 0; postLevels();
     post({ type: 'state', state: wasLive ? 'ended' : 'idle' });

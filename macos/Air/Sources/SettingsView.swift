@@ -84,6 +84,7 @@ struct AppearanceSettings: View {
             } footer: {
                 Text("Colours the orb, buttons and logo. The Dock icon follows the theme while Air is open.")
             }
+            OrbSettingsSection()
             IslandSettingsSection()
             Section("Light and dark") {
                 Picker("Appearance", selection: $mode) {
@@ -465,6 +466,36 @@ struct MemorySettings: View {
             } footer: {
                 Text("After each conversation Aria adds a summary to the note and new facts to Profile.md: goals, preferences, decisions, corrections and open threads. She never deletes lines there, so your edits win. At the start of a conversation she reads the profile and the three most recent summaries.")
             }
+        }
+    }
+}
+
+/// Settings › Appearance › Orb: the voice-reactive mesh around the 3D orb.
+struct OrbSettingsSection: View {
+    @AppStorage("airOrbMesh") private var mesh = true
+    @AppStorage("airOrbMeshStyle") private var style = "wireframe"
+    @AppStorage("airOrbSensitivity") private var sensitivity = 1.0
+    var body: some View {
+        Section {
+            Toggle("Voice-reactive mesh around the orb", isOn: $mesh)
+            Picker("Style", selection: $style) {
+                Text("Wireframe").tag("wireframe")
+                Text("Particles").tag("particles")
+            }
+            .pickerStyle(.segmented)
+            .disabled(!mesh)
+            LabeledContent("Sensitivity") {
+                Slider(value: $sensitivity, in: 0.3...3.0) { Text("Sensitivity") } minimumValueLabel: {
+                    Image(systemName: "speaker.wave.1")
+                } maximumValueLabel: {
+                    Image(systemName: "speaker.wave.3")
+                }
+            }
+            .disabled(!mesh)
+        } header: {
+            Text("Orb")
+        } footer: {
+            Text("The mesh spikes with the voice being heard or spoken: different pitches move different parts of it, and its colour follows loudness, pitch and the theme. Turns still with Reduce Motion.")
         }
     }
 }
