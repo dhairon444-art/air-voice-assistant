@@ -178,7 +178,7 @@ struct FailedView: View {
 
 // MARK: - History
 
-struct HistoryView: View {
+struct LegacyHistoryView: View {
     @EnvironmentObject var model: ModelProcess
     @State private var notes: [SessionNote] = []
     @State private var selection: SessionNote.ID?
