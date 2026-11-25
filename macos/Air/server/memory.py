@@ -247,7 +247,9 @@ Read the conversation and return JSON only, no prose, with this shape:
  "about": [], "goals": [], "preferences": [], "decisions": [], "corrections": [],
  "open_threads": [], "resolved_threads": []}}
 Rules:
-- Facts must be about the USER, stated or clearly implied by the user. Never record what Aria said as a fact about the user.
+- Facts must be about the USER's own life, work, goals, preferences and plans, stated or clearly implied by the user. Never record what Aria said, world facts or answers to questions (e.g. facts about places or products) as facts about the user. If the conversation was only questions and answers or one-off tasks, return empty lists.
+- "goals": lasting goals the user said they have (e.g. "Run a half marathon under two hours"), not individual requests made in this conversation ("save this table").
+- "decisions": choices the user made about their own life or plans, not tasks Aria carried out.
 - "corrections": every time the user said Aria was wrong or corrected a fact or a suggestion ("Actually...", "No, ..."), written as the correct fact ("Coach recommends 3 runs a week plus a rest day, not daily runs"); also instructions on how Aria should behave ("Be more direct").
 - "open_threads": only things the USER said they still need to do or want to come back to. Never turn Aria's own questions or suggestions into open threads.
 - "resolved_threads": items from the existing open threads below that this conversation resolved, copied verbatim.

@@ -243,6 +243,7 @@ class SessionRecorder:
         self.end: datetime | None = None
         self.segments: list[list] = []  # [offset_seconds, speaker, text]
         self.tool_log: list[dict] = []   # every tool call: time, tool, args, confirmation, result
+        self.web_log: list[dict] = []    # every URL searched, opened, read or saved
         self.last_mono: dict[str, float] = {}
         self.lock = threading.Lock()
         self.finished = False
@@ -353,6 +354,14 @@ class SessionRecorder:
                 cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")[:160]
                 body.append(f"| {t['time']} | {t['tool']} | {cell(json.dumps(t['args'], ensure_ascii=False))} "
                             f"| {t['confirm']} | {cell(t['result'])} |")
+            body.append("")
+        if self.web_log:
+            body += ["## Sources and web activity", "",
+                     "Only search words and links left the Mac.", ""]
+            for w in self.web_log:
+                label = (w.get("title") or "").replace("[", "(").replace("]", ")") or w["url"]
+                target = w["url"] if w["url"].startswith("http") else "file://" + w["url"].replace(" ", "%20")
+                body.append(f"- {w['time']} {w['action']}: [{label}]({target})")
             body.append("")
         return "\n".join(fm + body)
 

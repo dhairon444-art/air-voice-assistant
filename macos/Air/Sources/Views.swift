@@ -50,6 +50,8 @@ struct ContentView: View {
         }
         .onChange(of: prefs.voice) { _, v in web.updateConfig(voice: v, persona: prefs.persona, personality: prefs.personality) }
         .onChange(of: prefs.persona) { _, p in web.updateConfig(voice: prefs.voice, persona: p, personality: prefs.personality) }
+        .onChange(of: prefs.thinkFirst) { _, _ in web.updateConfig(voice: prefs.voice, persona: prefs.persona, personality: prefs.personality) }
+        .onChange(of: prefs.factCheck) { _, _ in web.updateConfig(voice: prefs.voice, persona: prefs.persona, personality: prefs.personality) }
         .onChange(of: prefs.brain) { _, b in
             model.restart(voice: prefs.voice, persona: prefs.persona, brain: b)
         }
@@ -221,8 +223,14 @@ struct SettingsView: View {
                     ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
                 }
                 .disabled(web.live)
+                Toggle("Think first", isOn: $prefs.thinkFirst)
+                    .disabled(!prefs.brain.canThink)
+                Toggle("Online fact-check", isOn: $prefs.factCheck)
             } footer: {
-                Text(prefs.brain.footer + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
+                Text(prefs.brain.footer
+                     + (prefs.brain.canThink ? " Think first: Aria reasons silently before answering, which adds delay." : " Think first needs a brain that can reason (not Fast).")
+                     + " Online fact-check: when the Mac is online, Aria may look facts up (only the search words leave the Mac) and says what an answer is based on; offline she answers from the model."
+                     + " Aria can use tools on this Mac (apps, calendar, reminders, notes, files, music, Shortcuts, mail); anything that changes, sends or deletes is read back and needs your spoken yes.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

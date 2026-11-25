@@ -225,7 +225,8 @@
     transcript.innerHTML = `<p class="empty">Preparing ${cfg.name} with your persona and voice…</p>`;
     curP = null;
     setStatus('Preparing persona and voice…');
-    const q = new URLSearchParams({ mode: cfg.mode, voice: cfg.voice || '', persona: cfg.persona || '' });
+    const q = new URLSearchParams({ mode: cfg.mode, voice: cfg.voice || '', persona: cfg.persona || '',
+      think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1' });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {

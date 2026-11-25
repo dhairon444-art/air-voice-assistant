@@ -37,7 +37,8 @@ from pathlib import Path
 from air_common import SessionRecorder, call_app_tool, emit, ensure_vault, watch_parent, write_index
 from memory import (Memory, add_summary_to_note, build_summary_prompt, merge_profile, parse_json_object,
                     transcript_of)
-from aria_tools import (NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from web_tools import Connectivity, WebSession
+from aria_tools import (WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         ACTION_TOOLS)
 
@@ -69,6 +70,10 @@ STT_RATE = 16000
 TTS_RATE = 24000
 
 
+SYCOPHANTIC_OPENER = re.compile(
+    r"^\W*((you'?re (absolutely |totally |completely |so )?right|you are (absolutely )?right)( to (question|ask about|challenge|wonder about) (that|this|it))?|great question|"
+    r"good question|what a great (question|point)|good point|great point|excellent (question|point))[\s,.!:;\u2014-]*",
+    re.I)
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
 
 
@@ -122,6 +127,7 @@ def main() -> None:
     p.add_argument("--voice", default="af_heart")
     p.add_argument("--text-prompt", default=DEFAULT_PERSONA)
     p.add_argument("--max-tokens", type=int, default=450)
+    p.add_argument("--think-budget", type=int, default=256, help="max reasoning tokens when Think first is on")
     p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
     p.add_argument("--temp", type=float, default=0.7)
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
@@ -183,8 +189,20 @@ def main() -> None:
     emit("MEMORY", f"active={mx.get_active_memory() / 1e9:.2f}GB peak={mx.get_peak_memory() / 1e9:.2f}GB")
 
     model_ids = f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
+    # Hybrid reasoning models (Qwen3 8B/14B/30B) accept enable_thinking; the 2507 Instruct models don't think.
+    can_think = "<think>" in (getattr(tokenizer, "chat_template", "") or "") and "Instruct-2507" not in args.llm
 
     memory = Memory(vault)
+    net = Connectivity()
+
+    def transcribe_file(wav_path: str) -> list:
+        """Local Parakeet transcription of a temporary audio file (runs on the GPU thread)."""
+        import wave as wavemod
+
+        with wavemod.open(wav_path) as w:
+            a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(np.float32) / 32768.0
+        res = stt.generate(mx.array(a), chunk_duration=120.0, overlap_duration=5.0)
+        return [(float(s.start), s.text.strip()) for s in getattr(res, "sentences", []) if s.text.strip()]
 
     def base_prompt() -> str:
         """Constant across sessions (with the tool schema it is ~2.6k tokens, KV-cached)."""
@@ -260,6 +278,9 @@ def main() -> None:
         if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
+        # "Think first": let a hybrid model reason before answering (hidden from speech).
+        think = request.query.get("think") == "1" and can_think
+        web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
         memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
         last_persona["text"] = persona
         recorder = SessionRecorder(vault, voice, persona, mode="Aria", model_id=model_ids,
@@ -276,6 +297,8 @@ def main() -> None:
             "labels": {},             # tool item id -> title, for spoken confirmations
             "recalled": set(),        # session notes already pulled into this conversation
         }
+        web = WebSession(net, vault, transcribe_audio=transcribe_file)
+        recorder.web_log = web.log
         out_q: asyncio.Queue = asyncio.Queue()
 
         def send(kind: int, payload: bytes = b"") -> None:
@@ -384,8 +407,21 @@ def main() -> None:
         def run_tool(name: str, targs: dict, confirm: str) -> dict:
             clean = {k: v for k, v in targs.items() if not k.startswith("_")}
             t = time.strftime("%H:%M:%S")
-            result = call_app_tool(name, clean) if name in TOOL_NAMES else \
-                {"ok": False, "error": f"unknown tool {name}"}
+            if name in WEB_TOOLS:
+                try:
+                    if name == "save_as":
+                        result = web.save_as(clean.get("format", ""), clean.get("title"), clean.get("content"))
+                    elif name == "open_source":
+                        result = web.open_source(int(clean.get("number") or 1))
+                    else:
+                        arg = clean.get("query") or clean.get("url") or ""
+                        result = getattr(web, name)(arg)
+                except Exception as exc:
+                    result = {"ok": False, "error": f"{name} failed: {exc}"}
+            elif name in TOOL_NAMES:
+                result = call_app_tool(name, clean)
+            else:
+                result = {"ok": False, "error": f"unknown tool {name}"}
             # remember titles for ids, so confirmations can say "Dentist" instead of an id
             for item in (result.get("events") or []) + (result.get("reminders") or []):
                 if isinstance(item, dict) and item.get("id"):
@@ -406,17 +442,29 @@ def main() -> None:
                 text_ = stt.generate(mx.array(core + dith[: core.shape[0]])).text.strip()
             return text_
 
+        def net_hint() -> str:
+            if not args.tools:
+                return ""
+            if not net.online:
+                return ("(Offline right now: web tools are unavailable. Answer from your own knowledge; for "
+                        "factual claims, mention briefly that you couldn't verify online.)")
+            if web_on:
+                return ("(Online: for factual claims such as facts, figures, dates, people or recent events, "
+                        "call web_search first, then say briefly what the answer is based on.)")
+            return "(Online lookups are turned off; use web tools only if the user explicitly asks.)"
+
         def with_recall(text_: str) -> str:
-            """Attach older conversations that match this turn (BM25). Added to the user message,
-            after the cached prefix, so the KV cache stays valid."""
+            """Attach older conversations that match this turn (BM25) and the network state. Added to
+            the user message, after the cached prefix, so the KV cache stays valid."""
+            hint = net_hint()
             hits = [h for h in memory.recall(text_) if h["name"] not in st["recalled"]]
             if not hits:
-                return text_
+                return f"{text_}\n\n{hint}" if hint else text_
             for h in hits:
                 st["recalled"].add(h["name"])
             emit("MEMORY", "recalled " + ", ".join(h["name"] for h in hits))
             notes = "\n".join(f"- {h['date']}: {h['summary']}" for h in hits)
-            return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})"
+            return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})" + (f"\n{hint}" if hint else "")
 
         def reply(audio, t_end: float, gen_id: int):
             def cancelled() -> bool:
@@ -430,10 +478,16 @@ def main() -> None:
             def speak(chunk: str) -> bool:
                 nonlocal first_audio
                 chunk = clean_for_speech(chunk)
+                if not spoken:
+                    # Anti-sycophancy guard: never open a reply with flattery or reflexive agreement.
+                    chunk = SYCOPHANTIC_OPENER.sub("", chunk).strip()
+                    chunk = chunk[:1].upper() + chunk[1:]
                 if not chunk:
                     return True
                 if "chunk1" not in marks:
                     marks["chunk1"] = time.monotonic()
+                if "hold" in marks and len(spoken) == marks["hold"] and "answer_start" not in marks:
+                    marks["answer_start"] = time.monotonic()
                 t_tts = time.monotonic()
                 for res in tts.generate(chunk, voice=voice, lang_code=voice[0]):
                     if cancelled():
@@ -452,12 +506,14 @@ def main() -> None:
                 perf["tts_s"] += time.monotonic() - t_tts
                 return True
 
-            def generate(live: bool = True) -> tuple[str, list[dict]]:
+            guard = {"hit": False}
+
+            def generate(live: bool = True, check_claims: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
                 prompt = list(tokenizer.apply_chat_template(
                     messages, tools=TOOLS if args.tools else None, add_generation_prompt=True, tokenize=True,
-                    enable_thinking=False))
+                    enable_thinking=think))
                 cached = st["cache_tokens"]
                 common = 0
                 for x, y in zip(cached, prompt):
@@ -476,37 +532,73 @@ def main() -> None:
                 in_tool = False
                 t0 = time.monotonic()
                 tts_before = perf["tts_s"]
-                for resp in stream_generate(lm, tokenizer, feed, max_tokens=args.max_tokens,
-                                            sampler=sampler, prompt_cache=st["cache"]):
-                    perf["tokens"] += 1
-                    full += resp.text
-                    if cancelled():
-                        break
-                    if in_tool:
-                        continue
-                    piece = resp.text
-                    if "<think>" in piece:
-                        in_think = True
-                    if in_think:
-                        if "</think>" in piece:
-                            in_think = False
-                            piece = piece.split("</think>", 1)[1]
-                        else:
+                segments = [feed]
+                think_tokens = 0
+                while segments:
+                    seg = segments.pop(0)
+                    for resp in stream_generate(lm, tokenizer, seg, max_tokens=args.max_tokens,
+                                                sampler=sampler, prompt_cache=st["cache"]):
+                        perf["tokens"] += 1
+                        if "tool_end" in marks and "r2_tok1" not in marks:
+                            marks["r2_tok1"] = time.monotonic()
+                            marks["r2_prompt"] = len(seg)
+                        full += resp.text
+                        if cancelled():
+                            break
+                        if in_tool:
                             continue
-                    buf += piece
-                    if "<tool_call>" in buf:
-                        buf, _ = buf.split("<tool_call>", 1)
-                        in_tool = True
-                    if not live:
-                        continue
-                    while True:
-                        chunk, buf = pop_sentence(buf, first=not spoken)
-                        if chunk is None or not speak(chunk):
+                        piece = resp.text
+                        if in_think and "</think>" not in piece:
+                            think_tokens += 1
+                            if think_tokens >= args.think_budget:
+                                # Thinking budget used up: close the reasoning and make it answer.
+                                close = "\n\nThat's enough thinking; answer now.\n</think>\n\n"
+                                full += close
+                                marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
+                                in_think = False
+                                segments.append(tokenizer.encode(close, add_special_tokens=False))
+                                break
+                        if "<think>" in piece:
+                            in_think = True
+                            marks.setdefault("think_start", time.monotonic())
+                        if in_think and live and not spoken and not marks.get("filler") and \
+                                time.monotonic() - marks.get("think_start", time.monotonic()) > 1.2:
+                            marks["filler"] = True
+                            speak("Let me think.")
+                        if in_think and "</think>" in piece:
+                            marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
+                        if in_think:
+                            if "</think>" in piece:
+                                in_think = False
+                                piece = piece.split("</think>", 1)[1]
+                            else:
+                                continue
+                        buf += piece
+                        if "<tool_call>" in buf:
+                            buf, _ = buf.split("<tool_call>", 1)
+                            in_tool = True
+                        if not live:
+                            continue
+                        while True:
+                            chunk, buf = pop_sentence(buf, first=not spoken or len(spoken) == marks.get("hold", -1))
+                            if chunk is None:
+                                break
+                            if check_claims and claims_action(chunk):
+                                # Would claim an action that no tool performed: stop speaking here.
+                                guard["hit"] = True
+                                live = False
+                                break
+                            if not speak(chunk):
+                                break
+                        if cancelled():
                             break
                     if cancelled():
                         break
                 if live and not cancelled() and buf.strip():
-                    speak(buf)
+                    if check_claims and claims_action(buf):
+                        guard["hit"] = True
+                    else:
+                        speak(buf)
                 perf["llm_s"] += (time.monotonic() - t0) - (perf["tts_s"] - tts_before)
                 offset = st["cache"][0].offset if hasattr(st["cache"][0], "offset") else None
                 gen_tokens = tokenizer.encode(full, add_special_tokens=False) if full else []
@@ -577,9 +669,12 @@ def main() -> None:
                 for _round in range(5):  # at most a few tool calls per turn
                     # The first answer streams live for speed. After a tool has run, the follow-up is
                     # checked before it is spoken, so a claim that something was done can be caught.
-                    live = not used_tool or acted  # after a successful action, its claims are true
+                    # Stream live; when no action has run yet, each sentence is checked before it is
+                    # spoken so a claim like "I've closed it" can't be voiced without a tool call.
+                    guard["hit"] = False
                     before = len(spoken)
-                    reply_text, calls = generate(live)
+                    reply_text, calls = generate(True, check_claims=bool(args.tools and not acted))
+                    live = True
                     said_parts += spoken[before:]
                     if cancelled():
                         break
@@ -589,7 +684,7 @@ def main() -> None:
                     else:
                         # A claim is only suspicious if no action tool actually ran in this turn.
                         suspicious = args.tools and not acted and (
-                            claims_action(reply_text) or (used_tool and announces_action(reply_text)))
+                            guard["hit"] or claims_action(reply_text) or (used_tool and announces_action(reply_text)))
                         if suspicious and not nudged:
                             nudged = True
                             emit("TOOLCALL", f"nudge: reply announced an action without a tool call: {reply_text[:120]!r}")
@@ -626,7 +721,10 @@ def main() -> None:
                     hold = ON_HOLD.get(name)
                     if hold and not spoken:
                         say(hold)
+                        marks["hold"] = len(spoken)  # the answer proper starts after this
+                    marks.setdefault("r1_end", time.monotonic())
                     result = run_tool(name, targs, "not needed (read-only or navigation)")
+                    marks.setdefault("tool_end", time.monotonic())
                     if name in ACTION_TOOLS and result.get("ok"):
                         acted = True
                     messages.append(tool_message(result))
@@ -648,7 +746,11 @@ def main() -> None:
                                     f"{first_audio - marks.get('chunk1', first_audio):.2f} (prompt "
                                     f"{perf['new_tokens']} new tokens, {perf['tokens']} tokens, llm "
                                     f"{perf['tokens'] / llm_s:.1f} tok/s, tts {perf['tts_s']:.1f}s for "
-                                    f"{perf['audio_s']:.1f}s audio, total {time.monotonic() - t_llm:.1f}s)"
+                                    f"{perf['audio_s']:.1f}s audio, total {time.monotonic() - t_llm:.1f}s"
+                                    f"{', thought %.1fs' % marks['think_s'] if 'think_s' in marks else ''}"
+                                    f"{', answer after tools at %.2fs' % (marks['answer_start'] - t_end) if 'answer_start' in marks else ''}"
+                                    f"{' [tool call decided %.2fs, tool done %.2fs, first answer token %.2fs after %d new prompt tokens]' % (marks['r1_end'] - t_end, marks['tool_end'] - t_end, marks['r2_tok1'] - t_end, marks['r2_prompt']) if 'r2_tok1' in marks else ''}"
+                                    f", net={'online' if net.online else 'offline'})"
                                     f"{' interrupted' if interrupted else ''}")
             finally:
                 if gen_id == st["gen"]:
@@ -681,7 +783,7 @@ def main() -> None:
             st["cache_tokens"] = shared["tokens"]
 
         gpu_jobs.put(prime_session)
-        emit("STATUS", f"session start mode=Aria voice={voice}")
+        emit("STATUS", f"session start mode=Aria voice={voice} think={think}")
         await ws.send_bytes(b"\x00")
         set_state("listening")
         send_task = asyncio.create_task(sender())
@@ -795,7 +897,7 @@ def main() -> None:
                             headers={"Cache-Control": "no-store"})
 
     async def handle_status(_):
-        return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria",
+        return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria", "can_think": can_think,
                                   "voices": VOICES})
 
     app = web.Application()

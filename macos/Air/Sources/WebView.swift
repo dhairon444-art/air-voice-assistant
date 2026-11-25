@@ -53,6 +53,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         let obj: [String: Any] = ["mode": "aria", "name": "Aria", "voice": voice, "persona": persona,
                                   "voices": Voices.all.map { ["id": $0.id, "name": $0.name, "note": $0.note] },
                                   "personality": personality,
+                                  "think": UserDefaults.standard.bool(forKey: "ariaThinkFirst")
+                                      && (Brain(rawValue: UserDefaults.standard.string(forKey: "ariaBrain") ?? "")?.canThink ?? false),
+                                  "web": UserDefaults.standard.object(forKey: "ariaFactCheck") as? Bool ?? true,
                                   "personalities": Personas.presets.map { ["id": $0.id, "name": $0.name, "note": $0.summary] }
                                       + [["id": Personas.customID, "name": "Custom", "note": "your own text, edit in Settings"]]]
         let data = try! JSONSerialization.data(withJSONObject: obj)

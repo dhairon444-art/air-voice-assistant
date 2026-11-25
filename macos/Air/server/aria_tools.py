@@ -71,7 +71,29 @@ TOOLS = [
     _fn("send_email", "Send an email with the Mail app.", {"to": S, "subject": S, "body": S}, ["to", "subject", "body"]),
     _fn("send_message", "Send an iMessage or SMS with the Messages app.",
         {"to": {"type": "string", "description": "phone number or email"}, "text": S}, ["to", "text"]),
+    # web (only the query or URL leaves the Mac)
+    _fn("web_search", "Search the web (DuckDuckGo and Wikipedia) to check a fact or find something. Returns numbered sources.",
+        {"query": S}, ["query"]),
+    _fn("open_url", "Open a web link in the user's default browser.", {"url": S}, ["url"]),
+    _fn("web_search_and_open", "Search the web and open the best result in the browser (e.g. 'open YouTube').",
+        {"query": S}, ["query"]),
+    _fn("open_source", "Open source number N from the last answer's sources in the browser ('open that source').",
+        {"number": {"type": "integer"}}),
+    _fn("read_page", "Fetch a web page's readable text to read, summarise or fact-check it.", {"url": S}, ["url"]),
+    _fn("extract_page", "Extract a page's text plus tables, lists, prices, dates and links, ready to save.",
+        {"url": S}, ["url"]),
+    _fn("get_video_transcript", "Get a video's transcript from its captions (YouTube and other sites).",
+        {"url": S}, ["url"]),
+    _fn("transcribe_video_audio", "Transcribe a video without captions here on the Mac (temporary audio, deleted after).",
+        {"url": S}, ["url"]),
+    _fn("save_as", "Save the last transcript or extracted page (or given text) as Excel, Word, CSV, or a note in the Air vault. "
+        "Files go to Documents/Air Exports and are never overwritten.",
+        {"format": {"type": "string", "enum": ["xlsx", "docx", "csv", "md"]}, "title": S,
+         "content": {"type": "string", "description": "optional text to save instead of the last extraction"}},
+        ["format"]),
 ]
+WEB_TOOLS = {"web_search", "open_url", "web_search_and_open", "open_source", "read_page", "extract_page",
+             "get_video_transcript", "transcribe_video_audio", "save_as"}
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
@@ -80,10 +102,15 @@ TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 NEEDS_CONFIRMATION = {
     "quit_app", "create_event", "move_event", "delete_event", "add_reminder", "complete_reminder",
     "delete_reminder", "create_note", "append_to_note", "set_volume", "set_mute", "run_shortcut",
-    "send_email", "send_message",
+    "send_email", "send_message", "transcribe_video_audio",
 }
 
 ON_HOLD = {
+    "web_search": "Let me check that.",
+    "read_page": "Let me read it.",
+    "extract_page": "Let me pull that out.",
+    "get_video_transcript": "Let me get the transcript.",
+    "web_search_and_open": "Let me find it.",
     "calendar_events": "Let me check your calendar.",
     "list_reminders": "Let me look at your reminders.",
     "reminder_lists": "Let me look at your reminders.",
@@ -103,7 +130,12 @@ TOOL_GUIDE = (
     "the exact action back to the user and only run it after they say yes, so do not ask for "
     "permission yourself first. After a tool runs, tell the user the result briefly and naturally. "
     "Resolve relative dates like tomorrow or next Friday yourself, using the current date and time "
-    "given below; call get_date_time when you need the current time. You cannot browse the web. "
+    "given below; call get_date_time when you need the current time. "
+    "Web: you can search, open, read and extract public pages and video transcripts, and save results as "
+    "Excel, Word, CSV or a note in the vault. You cannot click, fill in forms, log in, buy, post or "
+    "download files; say so if asked. When you use web results, say briefly what the answer is based on. "
+    "Never guess or make up a URL: to open something you found, use open_source with its number, or "
+    "web_search_and_open; use open_url only for a link the user gave or a tool returned. "
     "Rules: 1) If the user asks you to do something on the Mac, your reply must contain the matching "
     "tool call; an action only happens through a tool call, so never say you did something unless a "
     "tool result in this conversation says so. 2) Never state the current time or date from memory; "
@@ -159,6 +191,9 @@ def describe(name: str, a: dict) -> str:
     if name == "send_email":
         return (f"I'm about to send an email to {a.get('to')}, with the subject {a.get('subject')}, "
                 f"saying: {a.get('body')}.{q}")
+    if name == "transcribe_video_audio":
+        return (f"I'm about to download this video's audio temporarily and transcribe it here on the Mac; "
+                f"the audio is deleted afterwards.{q}")
     if name == "send_message":
         return f"I'm about to send a message to {a.get('to')} saying: {a.get('text')}.{q}"
     return f"I'm about to run {name.replace('_', ' ')}.{q}"
@@ -190,16 +225,22 @@ def parse_tool_calls(text: str) -> list[dict]:
     return calls
 
 
-ACTION_TOOLS = NEEDS_CONFIRMATION | {"open_app", "switch_to_app", "open_file", "reveal_in_finder", "music_control"}
+ACTION_TOOLS = NEEDS_CONFIRMATION | {"open_app", "switch_to_app", "open_file", "reveal_in_finder", "music_control",
+                                     "open_url", "web_search_and_open", "open_source", "save_as"}
 
 _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment|one moment|give me a (moment|second)|"
                      r"right away|done|has been|have been|i've (closed|quit|moved|deleted|cancel+ed|added|set|muted|sent|created|marked))\b",
                      re.I)
 
 
-_CLAIM = re.compile(r"\b(done|all set|has been|have been|is now (open|closed|set|muted|unmuted|playing|paused|added|deleted|moved)|"
-                    r"i('ve| have) (closed|quit|moved|deleted|cancel+ed|added|set|muted|unmuted|sent|created|marked|"
-                    r"opened|switched|paused|played|run|ran|turned))\b", re.I)
+_ACT = (r"(closed|quit|moved|deleted|cancel+ed|added|set|muted|unmuted|sent|created|marked|opened|switched|"
+        r"paused|played|ran|turned|saved|exported|written|wrote|downloaded|scheduled|completed)")
+_CLAIM = re.compile(
+    rf"\b(i'?ve|i have|i just|i went ahead and)\b[^.!?]{{0,60}}?\b{_ACT}\b"
+    rf"|\bi (just |also )?{_ACT} (it|the|your|a|that|them)\b"
+    rf"|\b(is|are) now (open|closed|muted|unmuted|playing|paused|saved|set to)\b"
+    rf"|\b(has|have) been (successfully )?(opened|closed|quit|muted|added|deleted|moved|created|sent|saved|exported|scheduled)\b"
+    r"|\ball (done|set)\b", re.I)
 
 
 def claims_action(text: str) -> bool:

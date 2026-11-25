@@ -60,6 +60,10 @@ final class Prefs: ObservableObject {
     @Published var voice: String { didSet { d.set(voice, forKey: "ariaVoice") } }
     @Published var brain: Brain { didSet { d.set(brain.rawValue, forKey: "ariaBrain") } }
     @Published var personality: String { didSet { d.set(personality, forKey: "ariaPersonality") } }
+    /// Reason before answering (hidden from speech). Only for brains that can think.
+    @Published var thinkFirst: Bool { didSet { d.set(thinkFirst, forKey: "ariaThinkFirst") } }
+    /// Check facts online when the Mac is online (search queries only). On by default.
+    @Published var factCheck: Bool { didSet { d.set(factCheck, forKey: "ariaFactCheck") } }
     /// Edited personality texts by id (only those the owner changed), plus the custom text.
     @Published private var edited: [String: String] { didSet { d.set(edited, forKey: "ariaPersonalityTexts") } }
 
@@ -74,6 +78,8 @@ final class Prefs: ObservableObject {
         }
         edited = e
         personality = d.string(forKey: "ariaPersonality") ?? Personas.defaultID
+        thinkFirst = d.object(forKey: "ariaThinkFirst") as? Bool ?? false
+        factCheck = d.object(forKey: "ariaFactCheck") as? Bool ?? true
         // Leftovers from the earlier two-mode app (old mode, voice and persona keys).
         for old in ["ariaPersona", "persona", "voice", "mode"] { d.removeObject(forKey: old) }
     }
