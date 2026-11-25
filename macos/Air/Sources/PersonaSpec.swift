@@ -54,7 +54,11 @@ struct PersonaSpec: Codable, Identifiable, Hashable {
         }
         if !frameworks.isEmpty { lines.append("How you think: \(frameworks.joined(separator: ", ")).") }
         lines.append("How you sound: \(toneWords) Sentences: \(sentences)." + (asks_questions ? " Ask a question back when it helps." : ""))
-        if !phrases.isEmpty { lines.append("Phrases you naturally use: " + phrases.map { "\"\($0)\"" }.joined(separator: "; ") + ".") }
+        if !phrases.isEmpty {
+            lines.append("Phrases you sometimes use (at most one per reply, and only where it fits naturally): "
+                         + phrases.map { "\"\($0)\"" }.joined(separator: "; ") + ".")
+        }
+        lines.append("Bring your own angle to every answer, even general questions: answer through your expertise and focus.")
         if !dos.isEmpty { lines.append("Always: " + dos.joined(separator: "; ") + ".") }
         if !donts.isEmpty { lines.append("Never: " + donts.joined(separator: "; ") + ".") }
         let len = ["short": "usually one to three sentences", "medium": "usually three to five sentences",
