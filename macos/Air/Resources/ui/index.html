@@ -46,6 +46,7 @@
   async function start() {
     if (live || ws) return;
     post({ type: 'state', state: 'connecting' });
+    if (cfg.chat) { return connect(); }   // Chat: typed only, no microphone or audio
     try {
       if (!ctx) {
         ctx = new AudioContext({ latencyHint: 'interactive' });
@@ -58,6 +59,10 @@
       post({ type: 'state', state: 'idle' });
       return;
     }
+    connect();
+  }
+
+  function connect() {
     const q = new URLSearchParams({ voice: cfg.voice || '', persona: cfg.persona || '', personality: cfg.personalityName || '',
       think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1', showThinking: cfg.showThinking ? '1' : '0',
       temp: String(cfg.temperature ?? '') });
@@ -87,6 +92,7 @@
 
   function goLive() {
     live = true;
+    if (cfg.chat) { sentPersona = cfg.persona; post({ type: 'state', state: 'live' }); return; }
     src = ctx.createMediaStreamSource(mic);
     capture = new AudioWorkletNode(ctx, 'air-capture', { numberOfInputs: 1, numberOfOutputs: 0 });
     capture.port.onmessage = (e) => {

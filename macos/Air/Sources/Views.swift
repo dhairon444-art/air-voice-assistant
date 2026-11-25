@@ -2,11 +2,12 @@ import AppKit
 import SwiftUI
 
 enum Tab: String, CaseIterable, Identifiable {
-    case talk = "Talk", history = "History", personalities = "Personalities"
+    case talk = "Talk", chat = "Chat", history = "History", personalities = "Personalities"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .talk: return "waveform"
+        case .chat: return "text.bubble"
         case .history: return "clock.arrow.circlepath"
         case .personalities: return "person.2.crop.square.stack"
         }
@@ -33,6 +34,7 @@ struct ContentView: View {
             Group {
                 switch ui.tab {
                 case .talk: talkView
+                case .chat: chatView
                 case .history: HistoryView()
                 case .personalities: MarketplaceView()
                 }
@@ -70,14 +72,38 @@ struct ContentView: View {
             switch s {
             case .ready(let port):
                 EngineTasks.port = port
-                web.load(port: port, config: prefs.engineConfig)
+                var cfg = prefs.engineConfig
+                cfg["chat"] = model.chatModel != nil
+                web.load(port: port, config: cfg)
             default: web.unload()
             }
         }
         .onChange(of: prefs.engineConfigKey) { _, _ in web.updateConfig(prefs.engineConfig) }
         .onChange(of: prefs.personality) { _, _ in web.prime(persona: prefs.persona) }
+        // Chat unloads the voice engine (more RAM for a bigger model); Talk brings it back.
+        .onChange(of: ui.tab) { _, t in
+            if t == .chat && model.chatModel != prefs.chatModel {
+                web.stop()
+                model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain, chat: prefs.chatModel)
+            } else if t == .talk && model.chatModel != nil {
+                web.stop()
+                model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
+            }
+        }
+        .onChange(of: prefs.chatModel) { _, m in
+            if ui.tab == .chat { web.stop(); model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain, chat: m) }
+        }
         .onChange(of: prefs.brain) { _, b in
-            model.restart(voice: prefs.voice, persona: prefs.persona, brain: b)
+            if model.chatModel == nil { model.restart(voice: prefs.voice, persona: prefs.persona, brain: b) }
+        }
+    }
+
+    @ViewBuilder var chatView: some View {
+        switch model.state {
+        case .ready where model.chatModel != nil: ChatView()
+        case .failed(let msg):
+            FailedView(message: msg) { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain, chat: prefs.chatModel) }
+        default: LoadingView()
         }
     }
 

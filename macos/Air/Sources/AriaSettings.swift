@@ -99,6 +99,10 @@ final class Prefs: ObservableObject {
     @Published var factCheck: Bool { didSet { d.set(factCheck, forKey: "ariaFactCheck") } }
     /// Show Aria's reasoning and activity in a panel on the Talk screen (and the note). Remembered.
     @Published var showThinking: Bool { didSet { d.set(showThinking, forKey: "airShowThinking") } }
+    /// The model for typed Chat mode.
+    @Published var chatModel: String = UserDefaults.standard.string(forKey: "airChatModel") ?? "mlx-community/Qwen3-8B-4bit" {
+        didSet { d.set(chatModel, forKey: "airChatModel") }
+    }
     /// Edited personality texts by id (only those the owner changed), plus the custom text.
     @Published private var edited: [String: String] { didSet { d.set(edited, forKey: "ariaPersonalityTexts") } }
 

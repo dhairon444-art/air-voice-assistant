@@ -51,8 +51,12 @@ final class ModelProcess: ObservableObject {
         return NSHomeDirectory() + "/Library/Application Support/Air/venv-smart/bin/python"
     }
 
-    func start(voice: String, persona: String, brain: Brain) {
+    /// The model running in typed Chat mode (nil: the voice engine is running).
+    @Published private(set) var chatModel: String?
+
+    func start(voice: String, persona: String, brain: Brain, chat: String? = nil) {
         guard process == nil else { return }
+        chatModel = chat
         let res = Bundle.main.resourceURL!
         let server = res.appendingPathComponent("server/aria_server.py").path
         let ui = res.appendingPathComponent("ui").path
@@ -72,10 +76,10 @@ final class ModelProcess: ObservableObject {
             "--vault", Vault.url.path,
             "--ui-dir", ui,
             "--parent-pid", String(getpid()),
-            "--llm", brain.rawValue,
+            "--llm", chat ?? brain.rawValue,
             "--voice", voice,
             "--text-prompt", persona,
-        ]
+        ] + (chat != nil ? ["--chat"] : [])
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
@@ -145,9 +149,9 @@ final class ModelProcess: ObservableObject {
         status = "Ready"
     }
 
-    func restart(voice: String, persona: String, brain: Brain) {
+    func restart(voice: String, persona: String, brain: Brain, chat: String? = nil) {
         stop()
-        start(voice: voice, persona: persona, brain: brain)
+        start(voice: voice, persona: persona, brain: brain, chat: chat)
     }
 
     /// Terminate the child and wait (bounded) until it is gone.

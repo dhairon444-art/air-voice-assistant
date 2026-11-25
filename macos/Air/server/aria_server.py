@@ -206,6 +206,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--llm", default="mlx-community/Qwen3-4B-Instruct-2507-4bit")
     p.add_argument("--stt", default="mlx-community/parakeet-tdt-0.6b-v2")
+    p.add_argument("--chat", action="store_true", help="typed Chat mode: no speech recognition, voice only for Read aloud")
     p.add_argument("--tts", default="mlx-community/Kokoro-82M-bf16")
     p.add_argument("--voice", default="af_heart")
     p.add_argument("--text-prompt", default=DEFAULT_PERSONA)
@@ -245,11 +246,15 @@ def main() -> None:
     emit("PROGRESS", "0.06|Loading speech recognition|4")
     emit("STATUS", "Loading speech recognition (Parakeet)")
     from mlx_audio.stt.utils import load as load_stt
-    speech = {"stt": load_stt(args.stt), "id": args.stt}
+    # Chat mode keeps RAM for a bigger brain: no speech recognition, and the voice loads only for Read aloud.
+    speech = {"stt": None if args.chat else load_stt(args.stt), "id": "" if args.chat else args.stt}
     emit("PROGRESS", "0.14|Loading the voice|2")
-    emit("STATUS", "Loading voice (Kokoro)")
     from mlx_audio.tts.utils import load_model as load_tts
-    tts = load_tts(args.tts)
+    if args.chat:
+        tts = None
+    else:
+        emit("STATUS", "Loading voice (Kokoro)")
+        tts = load_tts(args.tts)
     emit("PROGRESS", f"0.20|Loading the language model|{8 if 'Instruct-2507' in args.llm else 14}")
     emit("STATUS", f"Loading language model ({args.llm.split('/')[-1]})")
     from mlx_lm import load as load_lm, stream_generate
@@ -261,13 +266,14 @@ def main() -> None:
     emit("STATUS", f"Warming up (loaded in {time.time() - t0:.0f}s)")
     tw = time.time()
     rng = np.random.default_rng(0)
-    for secs in (1.0, 2.5, 4.0):  # realistic shapes so real turns don't pay kernel compile
-        speech["stt"].generate(mx.array((rng.standard_normal(int(STT_RATE * secs)) * 0.05).astype(np.float32)))
-    emit("STATUS", f"Warm-up: speech recognition {time.time() - tw:.1f}s")
-    tw = time.time()
-    for _ in tts.generate("Hello there.", voice=args.voice, lang_code=args.voice[0]):
-        pass
-    emit("STATUS", f"Warm-up: voice {time.time() - tw:.1f}s")
+    if not args.chat:
+        for secs in (1.0, 2.5, 4.0):  # realistic shapes so real turns don't pay kernel compile
+            speech["stt"].generate(mx.array((rng.standard_normal(int(STT_RATE * secs)) * 0.05).astype(np.float32)))
+        emit("STATUS", f"Warm-up: speech recognition {time.time() - tw:.1f}s")
+        tw = time.time()
+        for _ in tts.generate("Hello there.", voice=args.voice, lang_code=args.voice[0]):
+            pass
+        emit("STATUS", f"Warm-up: voice {time.time() - tw:.1f}s")
     tw = time.time()
     for _ in stream_generate(lm, tokenizer, "Hello", max_tokens=2):
         pass
@@ -276,7 +282,14 @@ def main() -> None:
     emit("STATUS", f"Models loaded in {time.time() - t0:.0f}s")
     emit("MEMORY", f"active={mx.get_active_memory() / 1e9:.2f}GB peak={mx.get_peak_memory() / 1e9:.2f}GB")
 
-    model_ids = f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
+    model_ids = args.llm if args.chat else f"{args.llm} + {args.stt} + {args.tts} ({args.voice})"
+    voice_box = {"tts": tts}
+
+    def ensure_tts():
+        """Chat mode: the voice loads on first Read aloud (GPU thread)."""
+        if voice_box["tts"] is None:
+            voice_box["tts"] = load_tts(args.tts)
+        return voice_box["tts"]
     # Hybrid reasoning models (Qwen3 8B/14B/30B, Gemma 4) accept enable_thinking; the 2507 Instruct models don't.
     _tpl = getattr(tokenizer, "chat_template", "") or ""
     can_think = ("<think>" in _tpl or "enable_thinking" in _tpl) and "Instruct-2507" not in args.llm
@@ -299,8 +312,9 @@ def main() -> None:
 
     def use_stt(repo: str) -> None:
         """Swap the speech recogniser (GPU thread). Language personalities use the multilingual
-        Parakeet v3 in place of the English v2, so RAM stays about the same; v2 returns after."""
-        if speech["id"] == repo:
+        Parakeet v3 in place of the English v2, so RAM stays about the same; v2 returns after.
+        Chat mode has no speech recognition at all."""
+        if args.chat or speech["id"] == repo:
             return
         import gc
         t0_ = time.time()
@@ -432,7 +446,7 @@ def main() -> None:
         web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
         memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
         last_persona["text"] = persona
-        recorder = SessionRecorder(vault, voice, persona, mode="Aria", model_id=model_ids,
+        recorder = SessionRecorder(vault, voice, persona, mode="Chat" if args.chat else "Aria", model_id=model_ids,
                                    assistant="Aria", user_side=True)
         recorder.personality = personality
         messages: list[dict] = build_messages(persona)
@@ -447,6 +461,7 @@ def main() -> None:
             "labels": {},             # tool item id -> title, for spoken confirmations
             "recalled": set(),        # session notes already pulled into this conversation
             "temp": min(1.2, max(0.0, float(request.query.get("temp") or args.temp))),  # personality's creativity
+            "mute_voice": bool(args.chat),   # Chat: text only (Read aloud is separate)
         }
         web = WebSession(net, vault, transcribe_audio=transcribe_file)
         recorder.web_log = web.log
@@ -772,7 +787,7 @@ def main() -> None:
             notes = "\n".join(f"- {h['date']}: {h['summary']}" for h in hits)
             return f"{text_}\n\n(Memory that may be relevant, from earlier conversations:\n{notes})" + (f"\n{hint}" if hint else "")
 
-        def reply(audio, t_end: float, gen_id: int, typed: str | None = None):
+        def reply(audio, t_end: float, gen_id: int, typed: str | None = None, image: str | None = None):
             def cancelled() -> bool:
                 return gen_id != st["gen"] or st["closed"]
 
@@ -1012,6 +1027,16 @@ def main() -> None:
                     emit("TURN", f"skipped: text={text!r} cancelled={cancelled()}")
                     set_state("listening")
                     return
+                extra_ctx = ""
+                if image:
+                    # An attached image (Chat): the vision model describes it for this turn; the file stays local.
+                    set_state("checking")
+                    try:
+                        seen = vision.describe(image, text or "Describe this image.", context="An image the user attached in chat.")
+                        extra_ctx = f"\n\n(The user attached an image. What it shows: {seen.get('summary', '')})"
+                        trace("result", f"image: {seen.get('summary', '')[:200]}")
+                    except Exception as exc:
+                        extra_ctx = f"\n\n(The user attached an image, but it couldn't be read: {exc})"
                 internal = text.startswith("(Screen watch:")   # a nudge from Live Screen, not something you said
                 if not internal:
                     send(5, text.encode())
@@ -1065,9 +1090,9 @@ def main() -> None:
                                                       "result": "Not run. Nothing was changed."}))
                         if verdict == "unclear":
                             # They moved on to something else: handle it as a new request.
-                            messages.append({"role": "user", "content": with_recall(text)})
+                            messages.append({"role": "user", "content": with_recall(text) + extra_ctx})
                 else:
-                    messages.append({"role": "user", "content": with_recall(text)})
+                    messages.append({"role": "user", "content": with_recall(text) + extra_ctx})
 
                 t_llm = time.monotonic()
                 said_parts: list[str] = []
@@ -1345,6 +1370,15 @@ def main() -> None:
                         st["busy"] = True
                         set_state("thinking")
                         gpu_jobs.put(lambda t_=typed, g_=gen_id, e_=time.monotonic(): reply(None, e_, g_, typed=t_))
+                    elif data.get("type") == "say" and data.get("image"):
+                        img = str(data.get("image"))
+                        if os.path.isfile(img):
+                            typed = str(data.get("text", ""))[:2000]
+                            gen_id = st["gen"] + 1
+                            st["gen"] = gen_id
+                            st["busy"] = True
+                            set_state("thinking")
+                            gpu_jobs.put(lambda t_=typed, g_=gen_id, i_=img, e_=time.monotonic(): reply(None, e_, g_, typed=t_, image=i_))
                     elif data.get("type") in ("confirm", "say"):
                         # A tapped Confirm/Cancel or a typed turn: handled like a spoken one, minus STT.
                         typed = {"yes": "Yes.", "no": "No."}.get(data.get("answer"), "") if data["type"] == "confirm" \
@@ -1437,7 +1471,7 @@ def main() -> None:
             def job():
                 try:
                     pcm = np.concatenate([np.array(r.audio).reshape(-1)
-                                          for r in tts.generate(PREVIEW_TEXT, voice=v, lang_code=v[0])])
+                                          for r in ensure_tts().generate(PREVIEW_TEXT, voice=v, lang_code=v[0])])
                     loop.call_soon_threadsafe(fut.set_result, pcm)
                 except Exception as exc:  # pragma: no cover
                     loop.call_soon_threadsafe(fut.set_exception, exc)
@@ -1526,6 +1560,36 @@ def main() -> None:
         emit("TASK", f"{kind} for {name!r}: {len(out)} chars")
         return web.json_response({"text": out})
 
+    async def handle_speak(request):
+        """Read aloud (Chat): synthesise text with the chosen voice, returned as WAV."""
+        text = (request.query.get("text") or "")[:4000]
+        voice_ = request.query.get("voice") or args.voice
+        if voice_ not in VOICES:
+            voice_ = args.voice
+        if not text.strip():
+            return web.Response(status=400)
+        loop_ = asyncio.get_running_loop()
+        fut = loop_.create_future()
+
+        def job():
+            import io
+            import wave as wavemod
+            try:
+                parts = [np.array(r.audio).reshape(-1) for r in ensure_tts().generate(clean_for_speech(text), voice=voice_, lang_code=voice_[0])]
+                pcm = (np.clip(np.concatenate(parts) if parts else np.zeros(1), -1, 1) * 32767).astype("<i2")
+                buf = io.BytesIO()
+                with wavemod.open(buf, "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(TTS_RATE); w.writeframes(pcm.tobytes())
+                out = buf.getvalue()
+            except Exception as exc:
+                emit("ERROR", f"read aloud failed: {exc}")
+                out = b""
+            loop_.call_soon_threadsafe(fut.set_result, out)
+
+        gpu_jobs.put(job)
+        data = await fut
+        return web.Response(body=data, content_type="audio/wav") if data else web.Response(status=500)
+
     async def handle_status(_):
         return web.json_response({"ready": True, "busy": lock.locked(), "mode": "aria", "can_think": can_think,
                                   "online": net.online,
@@ -1538,6 +1602,7 @@ def main() -> None:
     app.router.add_post("/api/prime", handle_prime)
     app.router.add_post("/api/task", handle_task)
     app.router.add_get("/api/preview", handle_preview)
+    app.router.add_get("/api/speak", handle_speak)
     app.router.add_static("/static/", path=str(ui_dir), name="static")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

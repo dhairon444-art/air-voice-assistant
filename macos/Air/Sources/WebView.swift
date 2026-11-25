@@ -242,6 +242,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     private func applyMutes() {
         js("window.airMuteMic && window.airMuteMic(\(micMuted)); window.airMuteVoice && window.airMuteVoice(\(voiceMuted))")
     }
+    /// Show your own message right away (used for image messages, which the engine echoes later).
+    func appendLocalUser(_ text: String) {
+        ariaOpen = false
+        turns.append(Turn(speaker: .you, text: text))
+    }
     /// A typed turn (works with the mic muted).
     func say(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
