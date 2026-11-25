@@ -141,6 +141,7 @@ struct MarketplaceView: View {
             }
         }
         .listStyle(.sidebar)
+        .amoledList()
     }
 
     private var toolbar: some View {
@@ -259,7 +260,7 @@ struct MarketCard: View {
             }
         }
         .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .panelBackground(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(installed ? theme.accent.opacity(0.5) : Color.secondary.opacity(0.2)))
         .contentShape(RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .combine)

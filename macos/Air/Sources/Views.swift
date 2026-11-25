@@ -206,6 +206,7 @@ struct HistoryView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .amoledList()
             }
             .frame(minWidth: 250, idealWidth: 300, maxWidth: 420)
             Group {

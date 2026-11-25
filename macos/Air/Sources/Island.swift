@@ -40,7 +40,7 @@ final class IslandController: ObservableObject {
             DispatchQueue.main.async { self?.refresh() }
         }.store(in: &bag)
         web.$turns.sink { [weak self] _ in self?.touch() }.store(in: &bag)
-        web.$micLevel.sink { [weak self] l in if l > 0.04 { self?.touch() } }.store(in: &bag)
+        web.meter.$mic.sink { [weak self] l in if l > 0.04 { self?.touch() } }.store(in: &bag)
         web.$confirm.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }.store(in: &bag)
         web.$live.sink { [weak self] live in
             if live { self?.touch() }
@@ -234,7 +234,7 @@ struct IslandView: View {
 
     private func pill(_ l: (text: String, symbol: String, tint: Color)) -> some View {
         HStack(spacing: 8) {
-            Orb3DView(state: web.state, mic: web.micLevel, out: web.outLevel, muted: web.micMuted, fps: 15, showMesh: false)
+            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: 15, tiny: true)
                 .frame(width: 26, height: 26)
                 .accessibilityHidden(true)
             Text(l.text)
@@ -244,7 +244,7 @@ struct IslandView: View {
                 .contentTransition(.opacity)
             Spacer(minLength: 4)
             if web.voiceMuted { Image(systemName: "speaker.slash.fill").font(.caption).foregroundStyle(.orange) }
-            LevelBars(level: web.state == .speaking ? web.outLevel : (web.micMuted ? 0 : web.micLevel),
+            LevelBars(meter: web.meter, speaking: web.state == .speaking, muted: web.micMuted,
                       tint: l.tint, active: web.state == .listening || web.state == .hearing || web.state == .speaking,
                       busy: web.state == .thinking || web.state == .checking || web.state == .working)
         }
@@ -262,7 +262,7 @@ struct IslandView: View {
                 Image(systemName: l.symbol).foregroundStyle(l.tint)
                 Text(l.text).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
-                LevelBars(level: web.state == .speaking ? web.outLevel : (web.micMuted ? 0 : web.micLevel), tint: l.tint,
+                LevelBars(meter: web.meter, speaking: web.state == .speaking, muted: web.micMuted, tint: l.tint,
                           active: web.state == .listening || web.state == .hearing || web.state == .speaking,
                           busy: web.state == .thinking || web.state == .checking || web.state == .working)
             }
@@ -325,7 +325,10 @@ struct IslandView: View {
 
 /// Five bars: follow the live level while listening or speaking, ripple gently while busy.
 struct LevelBars: View {
-    let level: Double
+    @ObservedObject var meter: AudioMeter
+    let speaking: Bool
+    let muted: Bool
+    private var level: Double { speaking ? meter.out : (muted ? 0 : meter.mic) }
     let tint: Color
     let active: Bool
     let busy: Bool

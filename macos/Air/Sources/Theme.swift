@@ -41,22 +41,60 @@ private struct AirThemeKey: EnvironmentKey {
     static let defaultValue: AirTheme = .aurora
 }
 
+private struct AmoledKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var airTheme: AirTheme {
         get { self[AirThemeKey.self] }
         set { self[AirThemeKey.self] = newValue }
+    }
+    /// AMOLED: pure black backgrounds, no vibrancy (Settings › Appearance › Background).
+    var amoled: Bool {
+        get { self[AmoledKey.self] }
+        set { self[AmoledKey.self] = newValue }
     }
 }
 
 /// Applies the chosen theme to a window's views: the environment value plus the control tint.
 struct Themed: ViewModifier {
     @AppStorage("airTheme") private var themeID = AirTheme.aurora.rawValue
+    @AppStorage("airBackground") private var background = "theme"
     func body(content: Content) -> some View {
         let theme = AirTheme(rawValue: themeID) ?? .aurora
+        let amoled = background == "amoled"
         content
             .environment(\.airTheme, theme)
+            .environment(\.amoled, amoled)
             .tint(theme.accent)
+            .background(amoled ? Color.black : Color.clear)
+            .toolbarBackground(amoled ? AnyShapeStyle(Color.black) : AnyShapeStyle(.bar), for: .windowToolbar)
+            .preferredColorScheme(amoled ? .dark : nil)
             .onChange(of: themeID) { _, _ in IconArt.applyDockIcon() }
+            .onChange(of: background) { _, _ in AppearanceMode.apply() }
+    }
+}
+
+extension View {
+    /// Sidebars and lists: pure black, no vibrancy, under AMOLED.
+    func amoledList() -> some View { modifier(AmoledList()) }
+    /// Panels and cards: near-black under AMOLED instead of the system grey.
+    func panelBackground<S: Shape>(in shape: S) -> some View { modifier(PanelBackground(shape: shape)) }
+}
+
+struct AmoledList: ViewModifier {
+    @Environment(\.amoled) private var amoled
+    func body(content: Content) -> some View {
+        if amoled { content.scrollContentBackground(.hidden).background(Color.black) } else { content }
+    }
+}
+
+struct PanelBackground<S: Shape>: ViewModifier {
+    let shape: S
+    @Environment(\.amoled) private var amoled
+    func body(content: Content) -> some View {
+        if amoled { content.background(Color(white: 0.055), in: shape) } else { content.background(.background.secondary, in: shape) }
     }
 }
 
@@ -72,6 +110,9 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     @MainActor static func apply() {
         // The -AirAppearance launch argument (screenshots) wins over the saved choice.
         let forced = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["AirAppearance"] as? String
+        let amoled = UserDefaults.standard.string(forKey: "airBackground") == "amoled"
+        for w in NSApp.windows where !(w is NSPanel) { w.backgroundColor = amoled ? .black : .windowBackgroundColor }
+        if amoled && forced == nil { NSApp.appearance = NSAppearance(named: .darkAqua); return }
         switch forced ?? UserDefaults.standard.string(forKey: "airAppearanceMode") ?? "system" {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)

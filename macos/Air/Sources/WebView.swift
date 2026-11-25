@@ -79,6 +79,13 @@ struct ResearchProgress: Equatable {
     let started = Date()
 }
 
+@MainActor
+final class AudioMeter: ObservableObject {
+    @Published var mic: Double = 0
+    @Published var out: Double = 0
+    @Published var bands: [Double] = Array(repeating: 0, count: 8)
+}
+
 struct ConfirmCard: Equatable {
     let tool: String
     let text: String
@@ -93,8 +100,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var state: TalkState = .idle
     @Published private(set) var turns: [Turn] = []
     @Published private(set) var confirm: ConfirmCard?
-    @Published private(set) var micLevel: Double = 0
-    @Published private(set) var outLevel: Double = 0
+    /// Audio levels and bands change ~16 times a second; they live in their own object so only the
+    /// orb and the level bars redraw, not every view that watches the conversation.
+    let meter = AudioMeter()
+    var micLevel: Double { get { meter.mic } set { if meter.mic != newValue { meter.mic = newValue } } }
+    var outLevel: Double { get { meter.out } set { if meter.out != newValue { meter.out = newValue } } }
     @Published var error: String?
     @Published private(set) var lag: Double = 0
     @Published private(set) var engineReady = false
@@ -109,8 +119,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// Mute: the mic (nothing captured or transcribed; the session stays open) and Aria's voice
     /// (captions only). Not remembered across launches: Air always starts unmuted.
     @Published private(set) var micMuted = false
-    /// Eight frequency bands (0..1) of the voice being heard or spoken, for the orb mesh.
-    @Published private(set) var bands: [Double] = Array(repeating: 0, count: 8)
+    /// Eight frequency bands (0..1) of the voice being heard or spoken, for the orb.
+    var bands: [Double] { get { meter.bands } set { meter.bands = newValue } }
     @Published private(set) var voiceMuted = false
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -396,6 +406,20 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         live = name != "idle" && name != "error" && name != "offline"
         bands = ["speaking", "listening", "hearing", "thinking-panel"].contains(name)
             ? [0.35, 0.7, 0.9, 0.55, 0.45, 0.3, 0.5, 0.2] : Array(repeating: 0, count: 8)
+        if UserDefaults.standard.bool(forKey: "AirDemoVoice"), ["speaking", "listening", "hearing"].contains(name) {
+            // Recordings: a synthetic, speech-like signal (syllable bursts with a moving pitch).
+            let start = Date()
+            Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    let t = Date().timeIntervalSince(start)
+                    let env = max(0, sin(t * 7.5)) * (0.6 + 0.4 * sin(t * 0.9))
+                    let pitch = 2.5 + 2 * sin(t * 1.3)
+                    self.bands = (0..<8).map { i in max(0, env * exp(-pow(Double(i) - pitch, 2) / 3) * (0.8 + 0.2 * sin(t * 13 + Double(i)))) }
+                    if name == "speaking" { self.outLevel = env * 0.15 } else { self.micLevel = env * 0.12 }
+                }
+            }
+        }
         switch name {
         case "listening": state = .listening; turns = [you1, aria1]; micLevel = 0.05
         case "hearing": state = .hearing; turns = [you1, aria1, Turn(speaker: .you, text: "Okay, and what about the pyramids")]; micLevel = 0.18

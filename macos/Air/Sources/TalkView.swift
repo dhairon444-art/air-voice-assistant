@@ -334,10 +334,19 @@ struct ChoiceRow: View {
 
 struct StateHero: View {
     @EnvironmentObject var web: WebController
+    @Environment(\.colorScheme) private var colorScheme
     var body: some View {
         VStack(spacing: 14) {
-            Orb3DView(state: web.state, mic: web.micLevel, out: web.outLevel, muted: web.micMuted, bands: web.bands)
+            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted)
                 .frame(width: 220, height: 220)
+                .background {
+                    // The glowing dots need dark space behind them; in light mode the orb sits in it.
+                    if colorScheme == .light {
+                        Circle().fill(RadialGradient(colors: [.black, .black.opacity(0.85), .black.opacity(0)],
+                                                     center: .center, startRadius: 0, endRadius: 120))
+                            .frame(width: 240, height: 240)
+                    }
+                }
                 .accessibilityHidden(true)
             if let what = web.looking {
                 Label("Looking at \(what)", systemImage: "eye.fill")
@@ -461,7 +470,7 @@ struct ThinkingSidebar: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(.background.secondary)
+        .panelBackground(in: Rectangle())
     }
 }
 
@@ -718,7 +727,7 @@ struct FileRow: View {
         }
         .controlSize(.small)
         .padding(10)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .panelBackground(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator))
     }
 }

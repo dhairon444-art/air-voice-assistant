@@ -45,6 +45,7 @@ struct SettingsView: View {
             List(SettingsTab.allCases, selection: Binding(get: { nav.tab }, set: { if let t = $0 { nav.tab = t } })) { t in
                 Label(t.title, systemImage: t.symbol).tag(t)
             }
+            .amoledList()
             .navigationSplitViewColumnWidth(170)
         } detail: {
             Group {
@@ -60,6 +61,7 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            .amoledList()
             .navigationTitle(nav.tab.title)
         }
         .frame(minWidth: 680, minHeight: 500)
@@ -69,6 +71,7 @@ struct SettingsView: View {
 struct AppearanceSettings: View {
     @AppStorage("airTheme") private var themeID = AirTheme.aurora.rawValue
     @AppStorage("airAppearanceMode") private var mode = AppearanceMode.system.rawValue
+    @AppStorage("airBackground") private var background = "theme"
     var body: some View {
         Form {
             Section {
@@ -86,6 +89,17 @@ struct AppearanceSettings: View {
             }
             OrbSettingsSection()
             IslandSettingsSection()
+            Section {
+                Picker("Background", selection: $background) {
+                    Text("Theme default").tag("theme")
+                    Text("AMOLED black (recommended)").tag("amoled")
+                }
+                .pickerStyle(.radioGroup)
+            } header: {
+                Text("Background")
+            } footer: {
+                Text("AMOLED black: pure black window, panels and Island, no blur, high-contrast text. The particle orb glows best on it. Accents keep your theme's colours.")
+            }
             Section("Light and dark") {
                 Picker("Appearance", selection: $mode) {
                     ForEach(AppearanceMode.allCases) { Text($0.label).tag($0.rawValue) }
@@ -470,20 +484,14 @@ struct MemorySettings: View {
     }
 }
 
-/// Settings › Appearance › Orb: the voice-reactive mesh around the 3D orb.
+/// Settings › Appearance › Orb: the particle orb.
 struct OrbSettingsSection: View {
-    @AppStorage("airOrbMesh") private var mesh = true
-    @AppStorage("airOrbMeshStyle") private var style = "wireframe"
     @AppStorage("airOrbSensitivity") private var sensitivity = 1.0
+    @AppStorage("airOrbDensity") private var density = "medium"
+    @AppStorage("airOrbGlow") private var glow = 0.6
+    @AppStorage("airOrbPalette") private var palette = "nebula"
     var body: some View {
         Section {
-            Toggle("Voice-reactive mesh around the orb", isOn: $mesh)
-            Picker("Style", selection: $style) {
-                Text("Wireframe").tag("wireframe")
-                Text("Particles").tag("particles")
-            }
-            .pickerStyle(.segmented)
-            .disabled(!mesh)
             LabeledContent("Sensitivity") {
                 Slider(value: $sensitivity, in: 0.3...3.0) { Text("Sensitivity") } minimumValueLabel: {
                     Image(systemName: "speaker.wave.1")
@@ -491,11 +499,20 @@ struct OrbSettingsSection: View {
                     Image(systemName: "speaker.wave.3")
                 }
             }
-            .disabled(!mesh)
+            Picker("Particle density", selection: $density) {
+                Text("Low").tag("low"); Text("Medium").tag("medium"); Text("High").tag("high")
+            }
+            .pickerStyle(.segmented)
+            LabeledContent("Glow") { Slider(value: $glow, in: 0...1) }
+            Picker("Colours", selection: $palette) {
+                Text("Nebula").tag("nebula")
+                Text("Follow theme").tag("theme")
+            }
+            .pickerStyle(.segmented)
         } header: {
             Text("Orb")
         } footer: {
-            Text("The mesh spikes with the voice being heard or spoken: different pitches move different parts of it, and its colour follows loudness, pitch and the theme. Turns still with Reduce Motion.")
+            Text("A sphere of glowing particles that moves with the voice being heard or spoken: different pitches move different parts of it, and loudness brightens it. Low density uses the least power. It holds still with Reduce Motion.")
         }
     }
 }
