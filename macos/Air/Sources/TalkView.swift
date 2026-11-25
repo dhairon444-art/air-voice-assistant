@@ -382,6 +382,7 @@ struct StateHero: View {
             Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: orbFPS)
                 .frame(width: 220, height: 220)
                 .accessibilityHidden(true)
+            ScreenWatchBadge()
             if let what = web.looking {
                 Label("Looking at \(what)", systemImage: "eye.fill")
                     .font(.callout.weight(.semibold))
@@ -850,6 +851,26 @@ struct ControlBar: View {
                 Text(web.live ? "Space · Esc to end" : "Space to talk").font(.caption).foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+/// "Watching your screen" while Live Screen is on, with an instant stop.
+struct ScreenWatchBadge: View {
+    @ObservedObject private var watch = ScreenWatch.shared
+    @MainActor static var visible: Bool { ScreenWatch.shared.watching }
+    var body: some View {
+        if watch.watching {
+            HStack(spacing: 6) {
+                Image(systemName: "eye.fill")
+                Text("Watching your screen" + (watch.current.map { ": \($0.app)" } ?? ""))
+                Button { _ = watch.stop() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).help("Stop watching (nothing is kept)")
+            }
+            .font(.callout.weight(.semibold)).foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.blue.gradient, in: Capsule())
+            .accessibilityLabel("Aria is watching your screen")
         }
     }
 }

@@ -192,7 +192,7 @@ enum ScreenLook {
 
     // MARK: helpers
 
-    private static func writePNG(_ image: CGImage) throws -> String {
+    static func writePNG(_ image: CGImage) throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("air-look-\(UUID().uuidString).png")
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw NSError(domain: "Air", code: 1, userInfo: [NSLocalizedDescriptionKey: "Couldn't write the image."])
@@ -217,7 +217,7 @@ enum ScreenLook {
     }
 
     /// Apple Vision text recognition, on this Mac, as extra context for small text.
-    private static func ocr(_ img: CGImage) -> String {
+    nonisolated static func ocr(_ img: CGImage) -> String {
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = true

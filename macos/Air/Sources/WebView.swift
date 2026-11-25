@@ -230,6 +230,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         applyMutes()
         js("window.airStart && window.airStart()")
     }
+    /// A JSON message straight to the engine (e.g. the live screen context).
+    func sendToEngine(_ obj: [String: Any]) {
+        guard live else { return }
+        js("window.airSend && window.airSend(\(Self.json(obj)))")
+    }
     func setMicMuted(_ on: Bool) { micMuted = on; if on { micLevel = 0 }; applyMutes() }
     func setVoiceMuted(_ on: Bool) { voiceMuted = on; if on { outLevel = 0 }; applyMutes() }
     func toggleMicMute() { setMicMuted(!micMuted) }

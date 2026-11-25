@@ -246,6 +246,7 @@ class SessionRecorder:
         self.web_log: list[dict] = []    # every URL searched, opened, read or saved
         self.personality = ""
         self.choices: list[tuple] = []   # (question, options, chosen, correct or None)
+        self.watched: list[tuple] = []   # (app, window) seen by Live Screen; only these names are kept
         self.research: list[dict] = []   # research briefs (question, sources with quotes)
         self.thinking: list[tuple] = []  # (time, kind, text), only when Show thinking is on
         self.last_mono: dict[str, float] = {}
@@ -391,6 +392,8 @@ class SessionRecorder:
                 body.append(f"> **{t_} {kind}:** " + text.replace("\n", " ").strip())
                 body.append(">")
             body.append("")
+        if self.watched:
+            body += ["## Screen", ""] + [f"- watched: {a}" + (f" - {w}" if w else "") for a, w in self.watched] + [""]
         if self.web_log:
             body += ["## Sources and web activity", "",
                      "Only search words and links left the Mac.", ""]

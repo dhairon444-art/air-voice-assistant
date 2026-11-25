@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
     var island: IslandController?
+    private var liveSub: Any?
     private var statusItem: NSStatusItem?
     private var hotKeyRef: EventHotKeyRef?
     private var keyMonitor: Any?
@@ -59,6 +60,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installKeyMonitor()
         applyQuickAccess()
         island = IslandController(web: web, prefs: prefs) { [weak self] in self?.showTalk() }
+        ScreenWatch.shared.send = { [weak self] msg in self?.web.sendToEngine(msg) }
+        // Always aware: the light screen context runs whenever a conversation is live; it stops with it.
+        liveSub = web.$live.removeDuplicates().sink { live in
+            Task { @MainActor in
+                if live && ScreenWatch.mode == "always" { _ = ScreenWatch.shared.start() }
+                if !live && ScreenWatch.shared.watching { _ = ScreenWatch.shared.stop() }
+            }
+        }
         if UserDefaults.standard.bool(forKey: "AirIslandDemo") { island?.demo = true; island?.refresh() }
 
         let args = UserDefaults.standard
@@ -134,6 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func cancelAction() { if web.confirm != nil { web.answer(false) } }
     @objc func showWelcome() { AppActions.showOnboarding() }
     @objc func toggleMicMute() { web.toggleMicMute() }
+    @objc func toggleScreenWatch() {
+        if ScreenWatch.shared.watching { _ = ScreenWatch.shared.stop() } else { _ = ScreenWatch.shared.start() }
+    }
     @objc func toggleVoiceMute() { web.toggleVoiceMute() }
     @objc func toggleThinking() { ui.tab = .talk; showMain(); prefs.showThinking.toggle() }
     @objc func pickPersonality(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { prefs.personality = id } }
@@ -213,6 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         menu.addItem(withTitle: web.live ? "End Conversation" : "Start Talking", action: #selector(toggleTalking), keyEquivalent: "")
             .target = self
+        let ws = menu.addItem(withTitle: ScreenWatch.shared.watching ? "Stop Watching Screen" : "Watch My Screen",
+                              action: #selector(toggleScreenWatch), keyEquivalent: "")
+        ws.target = self
+        ws.isEnabled = web.live
         let mm = menu.addItem(withTitle: "Mute Microphone", action: #selector(toggleMicMute), keyEquivalent: "")
         mm.target = self; mm.state = web.micMuted ? .on : .off
         let mv = menu.addItem(withTitle: "Mute Aria's Voice", action: #selector(toggleVoiceMute), keyEquivalent: "")

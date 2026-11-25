@@ -101,6 +101,11 @@ TOOLS = [
         "for that kind of task on content.",
         {"skill": S, "text": {"type": "string", "description": "the text to work on; leave empty to use the last page, transcript or research"}},
         ["skill"]),
+    _fn("watch_screen", "Start or stop Live Screen: keep a light, text-only sense of the user's front window "
+        "(OCR, on this Mac) while you talk, when the user says 'watch my screen' or 'keep an eye on this'. Optionally "
+        "watch for something they asked about ('tell me when the download finishes'): you'll be told when it seems true.",
+        {"on": {"type": "boolean"}, "watch_for": {"type": "string", "description": "optional condition to watch for"}},
+        ["on"]),
     _fn("ask_choice", "Ask the user a multiple-choice question with clickable options: to clarify what they mean, "
         "to let them pick between plans or options, or for a quiz question. The app shows the options and reads them "
         "out; the answer comes back to you. For a quiz, give the correct option number and a one-line explanation.",
@@ -178,7 +183,9 @@ TOOL_GUIDE = (
     "tool says a permission is missing, say which permission and how to allow it, for example: "
     "'I need Screen Recording permission: System Settings, Privacy and Security, Screen Recording, "
     "turn on Air.' If something is truly impossible, say exactly why in one sentence and offer the "
-    "closest thing you can do. For a clarifying question with a few clear options, a choice between plans, or a "
+    "closest thing you can do. When the turn includes 'On screen now' context, use it to answer questions about "
+    "what the user is looking at; for visual questions (a chart, photo, layout or diagram) call look_at_screen. "
+    "For a clarifying question with a few clear options, a choice between plans, or a "
     "quiz question, call ask_choice instead of listing options in speech. When the user mentions their own document (my resume, my CV, my "
     "report, that PDF), find it with find_files and read it with read_file before answering; never "
     "ask them to paste or describe it first. 'Open the one you mentioned' means open it now: "

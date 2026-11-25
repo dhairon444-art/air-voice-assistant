@@ -65,6 +65,8 @@ final class ToolRunner {
             case "read_file": return try readFile(str(args, "path"))
             case "read_browser_tabs": return try await browserTabs()
             case "switch_personality": return try await switchPersonality(str(args, "name"))
+            case "watch_screen":
+                return (args["on"] as? Bool ?? true) ? ScreenWatch.shared.start() : ScreenWatch.shared.stop()
             case "open_file": return try openPath(str(args, "path"), reveal: false)
             case "reveal_in_finder": return try openPath(str(args, "path"), reveal: true)
             // system

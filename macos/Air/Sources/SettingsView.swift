@@ -384,6 +384,7 @@ struct PrivacySettings: View {
                 Label("Online fact-check sends only search words or a link.", systemImage: "globe")
             }
             VisionPrivacySection()
+            ScreenAwarenessSection()
             Section("Permissions") {
                 PermissionRow(title: "Microphone", status: Self.av(AVCaptureDevice.authorizationStatus(for: .audio)),
                               pane: "Privacy_Microphone") {
@@ -518,6 +519,25 @@ struct OrbSettingsSection: View {
             Text("Orb")
         } footer: {
             Text("A sphere of glowing particles that moves with the voice being heard or spoken: different pitches move different parts of it, and loudness brightens it. Low density uses the least power. It holds still with Reduce Motion.")
+        }
+    }
+}
+
+/// Settings › Privacy › Screen awareness.
+struct ScreenAwarenessSection: View {
+    @AppStorage("airScreenAwareness") private var mode = "request"
+    var body: some View {
+        Section {
+            Picker("Screen awareness", selection: $mode) {
+                Text("Off").tag("off")
+                Text("On request").tag("request")
+                Text("Always aware").tag("always")
+            }
+            .pickerStyle(.radioGroup)
+        } header: {
+            Text("Live screen")
+        } footer: {
+            Text("On request: say “watch my screen” (or use the menu bar) and Aria keeps a light, text-only sense of the front window until you say “stop watching”. Always aware: this runs whenever a conversation is live, so “what's this?” just works; it pauses when the conversation ends or after 10 minutes without changes. Either way: excluded apps are never captured, only the window's text is read on this Mac, nothing goes online, frames are kept in memory only, and the session note records just “watched: app, window”.")
         }
     }
 }

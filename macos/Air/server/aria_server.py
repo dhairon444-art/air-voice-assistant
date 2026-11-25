@@ -609,6 +609,14 @@ def main() -> None:
                         result = getattr(web, name)(arg)
                 except Exception as exc:
                     result = {"ok": False, "error": f"{name} failed: {exc}"}
+            elif name == "watch_screen":
+                result = call_app_tool(name, clean, timeout=10)
+                if result.get("ok"):
+                    on = str(clean.get("on", True)).lower() not in ("false", "0", "no")
+                    st["watch_for"] = str(clean.get("watch_for") or "").strip() if on else ""
+                    if on:
+                        result["note"] = ("Say briefly: 'Watching your screen.'" +
+                                          (f" You'll be told when '{st['watch_for']}' seems true." if st["watch_for"] else ""))
             elif name == "switch_personality":
                 result = call_app_tool(name, clean, timeout=10)
                 if result.get("ok") and result.get("persona"):
@@ -728,6 +736,12 @@ def main() -> None:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
             the user message, after the cached prefix, so the KV cache stays valid."""
             hint = net_hint()
+            sc = st.get("screen")
+            if sc and not sc.get("excluded"):
+                hint = (f"(On screen now, from Live Screen: {sc['app']} - {sc['window']}. Visible text (OCR, may be partial): "
+                        f"{sc['text'][:900]})\n" + hint).strip()
+            elif sc and sc.get("excluded"):
+                hint = (f"(The front app, {sc['app']}, is on the excluded list: its screen is not read.)\n" + hint).strip()
             if args.tools and net.online and RESEARCH_ASK.search(text_):
                 hint = ("(The user asked for research: call the research tool with their question"
                         + (" and deep set to true" if re.search(r"\b(deep|thorough|in-depth|in depth)\b", text_, re.I) else "")
@@ -994,10 +1008,14 @@ def main() -> None:
                     emit("TURN", f"skipped: text={text!r} cancelled={cancelled()}")
                     set_state("listening")
                     return
-                send(5, text.encode())
-                trace("heard", text)
-                spoke_at = (t_end - (audio.shape[0] / STT_RATE if audio is not None else 0)) - recorder.start_mono
-                recorder.add_segment(spoke_at, "You", text)
+                internal = text.startswith("(Screen watch:")   # a nudge from Live Screen, not something you said
+                if not internal:
+                    send(5, text.encode())
+                    trace("heard", text)
+                    spoke_at = (t_end - (audio.shape[0] / STT_RATE if audio is not None else 0)) - recorder.start_mono
+                    recorder.add_segment(spoke_at, "You", text)
+                else:
+                    trace("screen", text.strip("()"))
 
                 asked = st.pop("pending_choice", None)
                 if asked is not None:
@@ -1266,6 +1284,36 @@ def main() -> None:
                             emit("STATUS", f"personality switched to {name_}")
                             trace("personality", f"Personality: {name_}")
                             event(t="personality", name=name_)
+                    elif data.get("type") == "screen_context":
+                        if not data.get("active"):
+                            st["screen"] = None
+                            st["watch_for"] = ""
+                            trace("screen", "Stopped watching the screen")
+                        else:
+                            prev = st.get("screen") or {}
+                            st["screen"] = {k: str(data.get(k) or "")[:1500] for k in ("app", "window", "text")}
+                            st["screen"]["excluded"] = bool(data.get("excluded"))
+                            key = (st["screen"]["app"], st["screen"]["window"])
+                            if not st["screen"]["excluded"] and key not in recorder.watched:
+                                recorder.watched.append(key)
+                            if (prev.get("app"), prev.get("window")) != key:
+                                trace("screen", f"Watching: {key[0]} - {key[1]}" if not st["screen"]["excluded"] else f"{key[0]} is excluded: not read")
+                            cond = st.get("watch_for")
+                            if cond and st["screen"]["text"] and not st["busy"] and not st["screen"]["excluded"]:
+                                snap = dict(st["screen"])
+
+                                def check(c=cond, sc=snap):
+                                    ans = side_llm([{"role": "user", "content": (
+                                        f"Screen text (OCR) from {sc['app']} - {sc['window']}:\n{sc['text'][:1200]}\n\n"
+                                        f"Does this show that: {c}? Answer only yes or no.")}], 3).strip().lower()
+                                    if ans.startswith("yes") and st.get("watch_for") == c and not st["busy"]:
+                                        st["watch_for"] = ""
+                                        g_ = st["gen"] + 1
+                                        st["gen"] = g_
+                                        st["busy"] = True
+                                        reply(None, time.monotonic(), g_,
+                                              typed=f"(Screen watch: '{c}' now looks true on screen. Tell the user in one short sentence.)")
+                                gpu_jobs.put(check)
                     elif data.get("type") == "show_thinking":
                         show["on"] = bool(data.get("on"))
                     elif data.get("type") == "mic_muted":

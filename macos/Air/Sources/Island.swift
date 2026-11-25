@@ -254,6 +254,7 @@ struct IslandView: View {
                 .contentTransition(.opacity)
             Spacer(minLength: 4)
             if web.voiceMuted { Image(systemName: "speaker.slash.fill").font(.caption).foregroundStyle(.orange) }
+            IslandEye()
             LevelBars(meter: controller.mainVisible ? AudioMeter.still : web.meter, speaking: web.state == .speaking, muted: web.micMuted,
                       tint: l.tint, active: web.state == .listening || web.state == .hearing || web.state == .speaking,
                       busy: web.state == .thinking || web.state == .checking || web.state == .working)
@@ -388,6 +389,16 @@ struct LevelBars: View {
         if active { return CGFloat(4 + min(1, level * 6) * 14 * weights[i]) }
         if busy { return CGFloat(phase ? (i % 2 == 0 ? 14 : 6) : (i % 2 == 0 ? 6 : 14)) }
         return 4
+    }
+}
+
+struct IslandEye: View {
+    @ObservedObject private var watch = ScreenWatch.shared
+    var body: some View {
+        if watch.watching {
+            Button { _ = watch.stop() } label: { Image(systemName: "eye.fill").font(.caption).foregroundStyle(.blue) }
+                .buttonStyle(.plain).help("Watching your screen. Click to stop.")
+        }
     }
 }
 
