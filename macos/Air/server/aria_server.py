@@ -47,7 +47,7 @@ from memory import (Memory, add_review_to_note, add_summary_to_note, build_summa
 from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
-from aria_tools import (refusal_phrase, claims_source, SOURCE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -977,7 +977,32 @@ def main() -> None:
                 spoke_at = (t_end - (audio.shape[0] / STT_RATE if audio is not None else 0)) - recorder.start_mono
                 recorder.add_segment(spoke_at, "You", text)
 
-                pending = st.pop("pending", None)
+                asked = st.pop("pending_choice", None)
+                if asked is not None:
+                    opts = asked["options"]
+                    idx = asked.get("clicked")
+                    idx = idx if idx is not None else match_choice(text, opts)
+                    if idx is None and not asked.get("allow_other"):
+                        # Not an answer: treat it as a new request, and tell the model the question went unanswered.
+                        event(t="choice_done", index=-1)
+                        messages.append(tool_message({"user_said": text, "answered": False}))
+                    else:
+                        chosen = opts[idx] if idx is not None else text
+                        res_ = {"user_said": text, "chosen": chosen, "index": (idx + 1) if idx is not None else None}
+                        correct = None
+                        if asked.get("quiz") and isinstance(asked.get("correct"), int):
+                            correct = idx is not None and idx + 1 == asked["correct"]
+                            res_["correct"] = correct
+                            res_["right_answer"] = opts[asked["correct"] - 1] if 0 < asked["correct"] <= len(opts) else None
+                        event(t="choice_done", index=idx if idx is not None else -1, correct=correct,
+                              explanation=str(asked.get("explanation") or "")[:300])
+                        recorder.choices.append((asked["question"], opts, chosen, correct))
+                        trace("result", f"choice: {chosen}" + ("" if correct is None else (" (correct)" if correct else " (wrong)")))
+                        messages.append(tool_message(res_))
+                        text = f"(Answered: {chosen})"
+                        messages.append({"role": "user", "content": "(I answered the question above.)"})
+                        asked = "done"
+                pending = st.pop("pending", None) if asked != "done" else None
                 confirmed_ok = False
                 if pending is not None:
                     verdict = classify_reply(text)
@@ -1076,6 +1101,18 @@ def main() -> None:
                     messages.append({"role": "assistant", "content": reply_text,
                                      "tool_calls": [{"type": "function",
                                                      "function": {"name": name, "arguments": targs}}]})
+                    if name == "ask_choice":
+                        opts = [str(o).strip() for o in (targs.get("options") or []) if str(o).strip()][:6]
+                        if len(opts) >= 2:
+                            q = str(targs.get("question") or "").strip()
+                            st["pending_choice"] = {"question": q, "options": opts, "quiz": bool(targs.get("quiz")),
+                                                    "correct": targs.get("correct"), "explanation": targs.get("explanation"),
+                                                    "allow_other": bool(targs.get("allow_other"))}
+                            event(t="choice", question=q, options=opts, quiz=bool(targs.get("quiz")),
+                                  allow_other=bool(targs.get("allow_other")))
+                            say(spoken_choice(q, opts))
+                            emit("TOOLCALL", f"ask_choice {json.dumps(targs)[:200]} awaiting an answer")
+                            break
                     if name in NEEDS_CONFIRMATION:
                         for key in ("event_id", "reminder_id"):
                             if targs.get(key) in st["labels"]:
@@ -1212,6 +1249,20 @@ def main() -> None:
                         if st["mute_voice"]:
                             st["play_until"] = 0.0
                             send(6)  # stop what's playing now
+                    elif data.get("type") == "choice" and st.get("pending_choice"):
+                        # A clicked or keyed option: answer it like a spoken turn.
+                        try:
+                            st["pending_choice"]["clicked"] = int(data.get("index"))
+                        except (TypeError, ValueError):
+                            pass
+                        typed = str(data.get("text") or "")[:200] or "(chose an option)"
+                        if assistant_audible():
+                            barge_in()
+                        gen_id = st["gen"] + 1
+                        st["gen"] = gen_id
+                        st["busy"] = True
+                        set_state("thinking")
+                        gpu_jobs.put(lambda t_=typed, g_=gen_id, e_=time.monotonic(): reply(None, e_, g_, typed=t_))
                     elif data.get("type") in ("confirm", "say"):
                         # A tapped Confirm/Cancel or a typed turn: handled like a spoken one, minus STT.
                         typed = {"yes": "Yes.", "no": "No."}.get(data.get("answer"), "") if data["type"] == "confirm" \

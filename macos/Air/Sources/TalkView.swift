@@ -90,6 +90,12 @@ struct TalkColumn: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 8)
             }
+            if let ch = web.choice {
+                ChoiceCardView(choice: ch)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let card = web.confirm {
                 ConfirmCardView(card: card)
                     .padding(.horizontal, 20)
@@ -838,6 +844,77 @@ struct MuteButton: View {
         .help("\(title) (\(shortcut))")
         .accessibilityLabel(title)
         .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// Multiple choice: big options with letters, keys 1-6, an optional free answer; quiz results inline.
+struct ChoiceCardView: View {
+    let choice: ChoicePrompt
+    @EnvironmentObject var web: WebController
+    @Environment(\.airTheme) private var theme
+    @State private var other = ""
+    private let letters = Array("ABCDEF")
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(choice.quiz ? "Quiz" : "Choose one", systemImage: choice.quiz ? "graduationcap" : "list.bullet.circle")
+                .font(.caption.weight(.semibold)).foregroundStyle(theme.accent)
+            Text(choice.question).font(.headline).fixedSize(horizontal: false, vertical: true)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 8)], spacing: 8) {
+                ForEach(Array(choice.options.enumerated()), id: \.offset) { i, opt in
+                    Button { web.choose(i) } label: {
+                        HStack(spacing: 10) {
+                            Text(String(letters[i])).font(.callout.weight(.bold))
+                                .frame(width: 26, height: 26)
+                                .background(badge(i).opacity(0.18), in: Circle())
+                            Text(opt).multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                            if let mark = mark(i) { Image(systemName: mark).foregroundStyle(badge(i)) }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(fill(i), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(badge(i).opacity(0.5)))
+                        .contentShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(KeyEquivalent(Character(String(i + 1))), modifiers: [])
+                    .disabled(choice.answered != nil)
+                    .help("Option \(letters[i]) (key \(i + 1), or say it)")
+                }
+            }
+            if choice.allowOther && choice.answered == nil {
+                HStack {
+                    TextField("Other…", text: $other).textFieldStyle(.roundedBorder).onSubmit(sendOther)
+                    Button("Send", action: sendOther).disabled(other.isEmpty)
+                }
+            }
+            if let ok = choice.correct {
+                Label(ok ? "Correct" : "Not quite", systemImage: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(ok ? .green : .red).font(.callout.weight(.semibold))
+                if !choice.explanation.isEmpty { Text(choice.explanation).font(.callout).foregroundStyle(.secondary) }
+            }
+            if choice.answered == nil {
+                Text("Click, press 1–\(choice.options.count), or say the letter or the answer.").font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(14)
+        .panelBackground(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(theme.accent.opacity(0.35)))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func sendOther() { web.choose(-1, text: other); other = "" }
+    private func badge(_ i: Int) -> Color {
+        guard choice.answered == i else { return theme.accent }
+        if let ok = choice.correct { return ok ? .green : .red }
+        return theme.accent
+    }
+    private func fill(_ i: Int) -> Color { choice.answered == i ? badge(i).opacity(0.15) : Color.secondary.opacity(0.08) }
+    private func mark(_ i: Int) -> String? {
+        guard choice.answered == i else { return nil }
+        if let ok = choice.correct { return ok ? "checkmark.circle.fill" : "xmark.circle.fill" }
+        return "checkmark"
     }
 }
 

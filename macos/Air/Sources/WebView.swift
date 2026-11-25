@@ -89,6 +89,17 @@ final class AudioMeter: ObservableObject {
     @Published var bands: [Double] = Array(repeating: 0, count: 8)
 }
 
+/// A multiple-choice question from Aria (ask_choice): clarifying, picking a plan, or a quiz.
+struct ChoicePrompt: Equatable {
+    let question: String
+    let options: [String]
+    let quiz: Bool
+    let allowOther: Bool
+    var answered: Int?
+    var correct: Bool?
+    var explanation = ""
+}
+
 struct ConfirmCard: Equatable {
     let tool: String
     let text: String
@@ -103,6 +114,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var state: TalkState = .idle
     @Published private(set) var turns: [Turn] = []
     @Published private(set) var confirm: ConfirmCard?
+    @Published private(set) var choice: ChoicePrompt?
     /// Audio levels and bands change ~16 times a second; they live in their own object so only the
     /// orb and the level bars redraw, not every view that watches the conversation.
     let meter = AudioMeter()
@@ -235,6 +247,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     func toggle() { live ? stop() : start() }
     func endTurn() { js("window.airEndTurn && window.airEndTurn()") }
     func interrupt() { js("window.airInterrupt && window.airInterrupt()") }
+    /// Pick option i (0-based), or give a free answer with i = -1.
+    func choose(_ i: Int, text: String? = nil) {
+        guard let c = choice, c.answered == nil else { return }
+        let t = text ?? (c.options.indices.contains(i) ? c.options[i] : "")
+        js("window.airChoice && window.airChoice(\(i), \(Self.json(["t": t]))['t'])")
+    }
     func answer(_ yes: Bool) {
         js("window.airConfirm && window.airConfirm('\(yes ? "yes" : "no")')")
         confirm = nil
@@ -289,6 +307,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             handleState(body["state"] as? String ?? "")
         case "you":
             ariaOpen = false
+            if choice?.answered != nil { choice = nil }  // the card stays until the next thing you say
             research = nil
             turns.append(Turn(speaker: .you, text: body["text"] as? String ?? ""))
         case "aria":
@@ -361,6 +380,17 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             confirm = ConfirmCard(tool: e["tool"] as? String ?? "", text: e["text"] as? String ?? "")
         case "confirm_done":
             confirm = nil
+        case "choice":
+            choice = ChoicePrompt(question: e["question"] as? String ?? "", options: e["options"] as? [String] ?? [],
+                                  quiz: e["quiz"] as? Bool ?? false, allowOther: e["allow_other"] as? Bool ?? false)
+        case "choice_done":
+            let i = e["index"] as? Int ?? -1
+            if i < 0 && choice?.allowOther != true { choice = nil }
+            else {
+                choice?.answered = i
+                choice?.correct = e["correct"] as? Bool
+                choice?.explanation = e["explanation"] as? String ?? ""
+            }
         case "research":
             let step = e["step"] as? String ?? ""
             let text = e["text"] as? String ?? ""

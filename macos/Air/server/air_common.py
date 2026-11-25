@@ -245,6 +245,7 @@ class SessionRecorder:
         self.tool_log: list[dict] = []   # every tool call: time, tool, args, confirmation, result
         self.web_log: list[dict] = []    # every URL searched, opened, read or saved
         self.personality = ""
+        self.choices: list[tuple] = []   # (question, options, chosen, correct or None)
         self.research: list[dict] = []   # research briefs (question, sources with quotes)
         self.thinking: list[tuple] = []  # (time, kind, text), only when Show thinking is on
         self.last_mono: dict[str, float] = {}
@@ -358,6 +359,19 @@ class SessionRecorder:
                 cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")[:160]
                 body.append(f"| {t['time']} | {t['tool']} | {cell(json.dumps(t['args'], ensure_ascii=False))} "
                             f"| {t['confirm']} | {cell(t['result'])} |")
+            body.append("")
+        if self.choices:
+            quiz = any(c[3] is not None for c in self.choices)
+            body += ["## Choices" + (" and quiz" if quiz else ""), "",
+                     "| Question | Options | Answer |" + (" Result |" if quiz else ""),
+                     "| --- | --- | --- |" + (" --- |" if quiz else "")]
+            cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")
+            for q, opts, chosen, ok in self.choices:
+                body.append(f"| {cell(q)} | {cell(' / '.join(opts))} | {cell(chosen)} |" +
+                            (f" {'✅' if ok else ('❌' if ok is False else '')} |" if quiz else ""))
+            if quiz:
+                scored = [c for c in self.choices if c[3] is not None]
+                body += ["", f"Score: {sum(1 for c in scored if c[3])} / {len(scored)}"]
             body.append("")
         for r in self.research:
             body += [f"## {'Deep research' if r.get('deep') else 'Research'}: {r['question']}", "",

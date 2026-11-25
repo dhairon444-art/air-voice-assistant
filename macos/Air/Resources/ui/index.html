@@ -149,6 +149,7 @@
   window.airEndTurn = () => sendJSON({ type: 'end_turn' });
   window.airInterrupt = () => { if (player) player.port.postMessage('reset'); sendJSON({ type: 'stop_speaking' }); };
   window.airConfirm = (answer) => sendJSON({ type: 'confirm', answer });
+  window.airChoice = (index, text) => sendJSON({ type: 'choice', index, text });
   window.airSay = (t) => sendJSON({ type: 'say', text: t });
   window.airPreview = async (voice) => {
     try {

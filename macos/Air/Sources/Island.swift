@@ -44,6 +44,7 @@ final class IslandController: ObservableObject {
         web.$turns.sink { [weak self] _ in self?.touch() }.store(in: &bag)
         web.meter.$mic.sink { [weak self] l in if l > 0.04 { self?.touch() } }.store(in: &bag)
         web.$confirm.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }.store(in: &bag)
+        web.$choice.sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }.store(in: &bag)
         web.$live.sink { [weak self] live in
             if live { self?.touch() }
             DispatchQueue.main.async { self?.refresh() }
@@ -76,7 +77,7 @@ final class IslandController: ObservableObject {
             next = m
         } else if !Self.enabled || (!web.live && !demo) {
             next = .hidden
-        } else if web.confirm != nil {
+        } else if web.confirm != nil || (web.choice != nil && web.choice?.answered == nil) {
             next = .confirm
         } else if hovering {
             next = .expanded
@@ -115,7 +116,7 @@ final class IslandController: ObservableObject {
         case .dot: return CGSize(width: 44, height: 26)
         case .pill: return CGSize(width: 250, height: 38)
         case .expanded: return CGSize(width: 400, height: 150)
-        case .confirm: return CGSize(width: 400, height: 132)
+        case .confirm: return CGSize(width: 400, height: web.choice != nil && web.confirm == nil ? 76 + CGFloat(min(web.choice?.options.count ?? 0, 6)) * 30 : 132)
         }
     }
 
@@ -226,7 +227,7 @@ struct IslandView: View {
                     .overlay(Circle().fill(l.tint).frame(width: 8, height: 8))
                     .onTapGesture { controller.hovering = true }
             case .confirm:
-                confirmCard
+                if web.confirm == nil, let ch = web.choice { choiceCard(ch) } else { confirmCard }
             case .expanded:
                 expanded(l)
             default:
@@ -303,6 +304,28 @@ struct IslandView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.black))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(l.tint.opacity(0.5), lineWidth: 1))
+    }
+
+    private func choiceCard(_ ch: ChoicePrompt) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ch.question).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(2)
+            ForEach(Array(ch.options.prefix(6).enumerated()), id: \.offset) { i, o in
+                Button { web.choose(i) } label: {
+                    HStack(spacing: 8) {
+                        Text(String(Array("ABCDEF")[i])).font(.caption.weight(.bold)).foregroundStyle(theme.accent)
+                        Text(o).font(.callout).foregroundStyle(.white).lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Color.white.opacity(0.1), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(KeyEquivalent(Character(String(i + 1))), modifiers: [])
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.black))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(theme.accent.opacity(0.7), lineWidth: 1))
     }
 
     private var confirmCard: some View {

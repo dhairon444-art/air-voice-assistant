@@ -101,6 +101,13 @@ TOOLS = [
         "for that kind of task on content.",
         {"skill": S, "text": {"type": "string", "description": "the text to work on; leave empty to use the last page, transcript or research"}},
         ["skill"]),
+    _fn("ask_choice", "Ask the user a multiple-choice question with clickable options: to clarify what they mean, "
+        "to let them pick between plans or options, or for a quiz question. The app shows the options and reads them "
+        "out; the answer comes back to you. For a quiz, give the correct option number and a one-line explanation.",
+        {"question": S, "options": {"type": "array", "items": S, "description": "2 to 6 short options"},
+         "quiz": {"type": "boolean"}, "correct": {"type": "integer", "description": "quiz only: 1-based number of the right option"},
+         "explanation": S, "allow_other": {"type": "boolean", "description": "also accept a free answer"}},
+        ["question", "options"]),
     _fn("switch_personality", "Switch Aria's personality now, to one of the user's installed or built-in personalities, "
         "when the user asks (for example 'switch to the Mentor').", {"name": S}, ["name"]),
     _fn("save_as", "Save the last transcript or extracted page (or given text) as Excel, Word, CSV, or a note in the Air vault. "
@@ -171,7 +178,8 @@ TOOL_GUIDE = (
     "tool says a permission is missing, say which permission and how to allow it, for example: "
     "'I need Screen Recording permission: System Settings, Privacy and Security, Screen Recording, "
     "turn on Air.' If something is truly impossible, say exactly why in one sentence and offer the "
-    "closest thing you can do. When the user mentions their own document (my resume, my CV, my "
+    "closest thing you can do. For a clarifying question with a few clear options, a choice between plans, or a "
+    "quiz question, call ask_choice instead of listing options in speech. When the user mentions their own document (my resume, my CV, my "
     "report, that PDF), find it with find_files and read it with read_file before answering; never "
     "ask them to paste or describe it first. 'Open the one you mentioned' means open it now: "
     "open_source with its number, web_search_and_open with its name, or open_file for a local file. "
@@ -413,6 +421,42 @@ NUDGE = ("(System note for the assistant, not from the user: you described an ac
 _YES = re.compile(r"^\W*(yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|please do|confirm(ed)?|correct|"
                   r"that'?s right|absolutely|definitely|of course)\b", re.I)
 _NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|never ?mind|wait|not now|hold on)\b", re.I)
+
+
+# Ordinals first, so "the second one" is 2, not "one".
+_ORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "last": -1,
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6}
+
+
+def match_choice(text: str, options: list[str]) -> int | None:
+    """Which option did the user pick (0-based)? Letters ('B', 'option b'), numbers or ordinals
+    ('2', 'the second one', 'the last'), or the option's own words."""
+    t = (text or "").strip().lower()
+    m = re.match(r"^\W*(?:option|answer|letter|it'?s|its|i choose|i pick|i'll take|pick)?\s*\(?([a-f])\)?\W*(?:$|[.,!]|\s)", t)
+    if m and len(t) <= 24:
+        i = ord(m.group(1)) - 97
+        if i < len(options):
+            return i
+    for w, n in _ORD.items():
+        if re.search(rf"\b{w}\b", t) and (len(t) <= 30 or "one" in t or "option" in t):
+            i = len(options) - 1 if n == -1 else n - 1
+            if 0 <= i < len(options):
+                return i
+    def words(x: str) -> set:
+        return {w for w in re.findall(r"[a-zà-ÿ0-9']+", x.lower()) if len(w) > 2}
+    scores = [len(words(o) & words(t)) / max(1, len(words(o))) for o in options]
+    best = max(range(len(options)), key=lambda k: scores[k]) if options else None
+    if best is not None and scores[best] >= 0.5 and scores.count(scores[best]) == 1:
+        return best
+    return None
+
+
+def spoken_choice(question: str, options: list[str]) -> str:
+    letters = "ABCDEF"
+    parts = [f"{letters[i]}, {o}" for i, o in enumerate(options[:6])]
+    body = "; ".join(parts[:-1]) + ("; or " if len(parts) > 1 else "") + parts[-1]
+    return f"{question.strip().rstrip('?')}? Is it {body}?"
 
 
 def classify_reply(text: str) -> str:
