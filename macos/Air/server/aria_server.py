@@ -47,7 +47,7 @@ from memory import (Memory, add_review_to_note, add_summary_to_note, build_summa
 from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
-from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -67,7 +67,10 @@ SPOKEN_STYLE = (
     "VOICE FORMAT: you are heard through a voice interface, not read. Reply in spoken English sentences: no "
     "markdown, no bullet points or numbered lists, no headings, no emojis, no URLs (except inside screen blocks "
     "described below). Spell out symbols and abbreviations as you would say them. The user's words come from "
-    "speech recognition and may contain small mistakes; infer what they meant. Keep it a back-and-forth; your "
+    "speech recognition and may contain small mistakes; infer what they meant. You DO hear the user: the Mac's "
+    "microphone and on-device speech recognition turn their voice into the text you get, so if they ask whether you "
+    "can hear them, say yes (and if their words came through garbled, say which part was unclear). Talk to them as "
+    "'you', never 'the user'. Keep it a back-and-forth; your "
     "personality sets your length and tone."
 )
 DISPLAY_RULES = (
@@ -128,6 +131,8 @@ def model_name(repo: str) -> str:
     n = repo.split("/")[-1]
     q = re.search(r"-(\d)bit$", n)
     n = re.sub(r"-\dbit$", "", n).replace("-", " ")
+    n = re.sub(r"^gemma 4 26B A4B it heretic$", "Gemma 4 26B Heretic", n, flags=re.I)
+    n = re.sub(r"^gemma\b", "Gemma", n)
     return n + (f" ({q.group(1)}-bit)" if q else "")
 
 
@@ -955,6 +960,11 @@ def main() -> None:
                                 disp.update(on=True, text="")
                             if "```" in buf:
                                 inner, buf = buf.split("```", 1)
+                                if check_sources and claims_private(disp["text"] + inner):
+                                    guard["source"] = "private"   # a made-up calendar/mail record: never show it
+                                    live = False
+                                    disp["on"] = False
+                                    break
                                 show_block(disp["text"] + inner)
                                 disp["on"] = False
                             else:
@@ -977,9 +987,9 @@ def main() -> None:
                                 guard["hit"] = True
                                 live = False
                                 break
-                            if check_sources and claims_source(chunk):
-                                # Would cite a search or reading that never happened: stop here.
-                                guard["source"] = True
+                            if check_sources and (claims_source(chunk) or claims_private(chunk)):
+                                # Would cite a search or reading, or the user's calendar/files, that no tool gave: stop here.
+                                guard["source"] = "private" if claims_private(chunk) else True
                                 live = False
                                 break
                             if not speak(chunk):
@@ -993,8 +1003,8 @@ def main() -> None:
                         pass
                     elif check_claims and claims_action(buf):
                         guard["hit"] = True
-                    elif check_sources and claims_source(buf):
-                        guard["source"] = True
+                    elif check_sources and (claims_source(buf) or claims_private(buf)):
+                        guard["source"] = "private" if claims_private(buf) else True
                     else:
                         speak(buf)
                 perf["llm_s"] += (time.monotonic() - t0) - (perf["tts_s"] - tts_before)
@@ -1137,9 +1147,10 @@ def main() -> None:
                     else:
                         if guard["source"] and not src_nudged:
                             src_nudged = True
-                            emit("TOOLCALL", f"nudge: cited a source without a web tool: {reply_text[:120]!r}")
+                            private = guard["source"] == "private"
+                            emit("TOOLCALL", f"nudge: {'stated private data' if private else 'cited a source'} without a tool: {reply_text[:120]!r}")
                             messages.append({"role": "assistant", "content": reply_text})
-                            messages.append({"role": "user", "content": SOURCE_NUDGE})
+                            messages.append({"role": "user", "content": PRIVATE_NUDGE if private else SOURCE_NUDGE})
                             continue
                         # A claim is only suspicious if no action tool actually ran in this turn.
                         suspicious = args.tools and not acted and (
@@ -1171,7 +1182,12 @@ def main() -> None:
                                      "tool_calls": [{"type": "function",
                                                      "function": {"name": name, "arguments": targs}}]})
                     if name == "ask_choice":
-                        opts = [str(o).strip() for o in (targs.get("options") or []) if str(o).strip()][:6]
+                        opts = []
+                        for o in (targs.get("options") or []):
+                            o = str(o).strip()
+                            if o and o.casefold() not in {x.casefold() for x in opts}:
+                                opts.append(o)   # identical options make a useless question
+                        opts = opts[:6]
                         if len(opts) >= 2:
                             q = str(targs.get("question") or "").strip()
                             st["pending_choice"] = {"question": q, "options": opts, "quiz": bool(targs.get("quiz")),
@@ -1183,7 +1199,7 @@ def main() -> None:
                             emit("TOOLCALL", f"ask_choice {json.dumps(targs)[:200]} awaiting an answer")
                             break
                         # Not enough options: tell the model, never forward it to the app.
-                        messages.append(tool_message({"ok": False, "error": "ask_choice needs a question and 2 to 6 options."}))
+                        messages.append(tool_message({"ok": False, "error": "ask_choice needs a question and 2 to 6 different options."}))
                         continue
                     if name in NEEDS_CONFIRMATION:
                         for key in ("event_id", "reminder_id"):

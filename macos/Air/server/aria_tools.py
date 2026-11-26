@@ -325,6 +325,24 @@ _SOURCE_CLAIM = re.compile(
     r"i('ve| have) (just )?(read|seen|found)\b|(sources?|reports?) (say|show|confirm)s?\b)", re.I)
 
 
+_PRIVATE_CLAIM = re.compile(
+    r"\b(you have (a|an|one|two|three|\d+) (meeting|event|appointment|call|reminder)s?\b|"
+    r"(there'?s|there is|there are|you'?ve got|i see|i can see) [^.]{0,40}\b(on|in) your (calendar|reminders|inbox|mail)\b|"
+    r"your (calendar|reminders|inbox) (shows?|has|says)\b|"
+    r"i('ll| will| just| have|'ve)? ?(check(ed)?|look(ed)? at|pull(ed)? up|read) your (calendar|reminders|inbox|mail|messages|files)\b)|"
+    r'"(event|reminder|message|mail)_?id"\s*:', re.I)
+
+
+def claims_private(text: str) -> bool:
+    """A reply stating the user's calendar, reminders, mail or files; only allowed when a tool ran this turn."""
+    return bool(_PRIVATE_CLAIM.search(text or ""))
+
+
+PRIVATE_NUDGE = ("(System note for the assistant, not from the user: you described the user's calendar, reminders, "
+                 "mail or files, but no tool ran, so you don't know them. Call the right tool now (for example "
+                 "list_events or list_reminders) if it matters, or answer again without stating anything about them.)")
+
+
 def claims_source(text: str) -> bool:
     """A reply citing a search or reading; only allowed when a web tool ran this turn."""
     return bool(_SOURCE_CLAIM.search(text or ""))
