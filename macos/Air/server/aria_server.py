@@ -219,6 +219,7 @@ def main() -> None:
     p.add_argument("--max-tokens", type=int, default=450)
     p.add_argument("--think-budget", type=int, default=256, help="max reasoning tokens when Think first is on")
     p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
+    p.add_argument("--draft", default="", help="draft model for speculative decoding, e.g. mlx-community/Qwen3-0.6B-4bit")
     p.add_argument("--tools-format", default="compact", choices=["template", "compact", "nowrap"],
                    help="how the inlined tool schema is written (compact saves ~880 tokens)")
     p.add_argument("--persona-first", dest="persona_last", action="store_false",
@@ -280,6 +281,18 @@ def main() -> None:
     from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache
     from mlx_lm.sample_utils import make_sampler
     lm, tokenizer = load_lm(args.llm)
+    # Speculative decoding (Deeper brain): a small model from the same family drafts a few tokens that
+    # the main model checks in one pass. Same tokenizer required; the prompt cache covers both models.
+    draft = None
+    if args.draft:
+        try:
+            draft, _ = load_lm(args.draft)
+            emit("STATUS", f"Draft model for speculative decoding: {args.draft.split('/')[-1]}")
+        except Exception as exc:
+            emit("STATUS", f"Draft model not used: {exc}")
+
+    def new_cache():
+        return make_prompt_cache(lm) + (make_prompt_cache(draft) if draft is not None else [])
 
     emit("PROGRESS", "0.40|Warming up|4")
     emit("STATUS", f"Warming up (loaded in {time.time() - t0:.0f}s)")
@@ -403,13 +416,14 @@ def main() -> None:
 
     # One KV cache for the whole process: sessions run one at a time, so each new session only
     # trims back to the shared system-prompt prefix instead of prefilling ~2k tokens again.
-    shared = {"cache": make_prompt_cache(lm), "tokens": []}
+    shared = {"cache": new_cache(), "tokens": []}
 
     # Persistent prompt cache: the primed system prompt's KV cache on disk (~0.9 GB for the 4B), so a
     # launch loads it in under a second instead of re-processing ~6k tokens (~20 s on an M4). Keyed by
     # brain; the file sharing the longest token prefix is loaded and only the differing tail is processed.
     pc_dir = Path.home() / "Library/Caches/Air/prompt"
-    pc_key = re.sub(r"[^A-Za-z0-9]+", "_", args.llm.split("/")[-1]) + ("-chat" if args.chat else "")
+    pc_key = (re.sub(r"[^A-Za-z0-9]+", "_", args.llm.split("/")[-1]) + ("-chat" if args.chat else "")
+              + ("-d" + re.sub(r"[^A-Za-z0-9]+", "_", args.draft.split("/")[-1]) if draft is not None else ""))
     PC_CAP = 2 * 1024 ** 3
 
     def _common(a: list, b: list) -> int:
@@ -477,7 +491,7 @@ def main() -> None:
         if len(shared["tokens"]) > common:
             trim_prompt_cache(shared["cache"], len(shared["tokens"]) - common)
         if common < len(sys_tokens):
-            for _ in stream_generate(lm, tokenizer, sys_tokens[common:], max_tokens=1,
+            for _ in stream_generate(lm, tokenizer, sys_tokens[common:], max_tokens=1, draft_model=draft,
                                      prompt_cache=shared["cache"]):
                 pass
         off = shared["cache"][0].offset
@@ -1061,7 +1075,7 @@ def main() -> None:
                 think_flush = [time.monotonic()]
                 while segments:
                     seg = segments.pop(0)
-                    for resp in stream_generate(lm, tokenizer, seg, max_tokens=args.max_tokens,
+                    for resp in stream_generate(lm, tokenizer, seg, max_tokens=args.max_tokens, draft_model=draft,
                                                 sampler=sampler, prompt_cache=st["cache"]):
                         perf["tokens"] += 1
                         if "tool_end" in marks and "r2_tok1" not in marks:
@@ -1174,7 +1188,7 @@ def main() -> None:
                 gen_tokens = tokenizer.encode(full, add_special_tokens=False) if full else []
                 st["cache_tokens"] = (prompt + gen_tokens)[:offset] if offset is not None else []
                 if offset is None:
-                    st["cache"] = shared["cache"] = make_prompt_cache(lm)
+                    st["cache"] = shared["cache"] = new_cache()
                 shared["tokens"] = st["cache_tokens"]
                 if think_buf:
                     event(t="thought", text="".join(think_buf))

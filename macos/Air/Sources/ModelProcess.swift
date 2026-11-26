@@ -79,7 +79,7 @@ final class ModelProcess: ObservableObject {
             "--llm", chat ?? brain.rawValue,
             "--voice", voice,
             "--text-prompt", persona,
-        ] + (chat != nil ? ["--chat"] : [])
+        ] + (chat != nil ? ["--chat"] : []) + Self.draftArgs(chat == nil ? brain : nil)
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
@@ -147,6 +147,14 @@ final class ModelProcess: ObservableObject {
     func showDemoReady() {
         state = .ready(port: 0)
         status = "Ready"
+    }
+
+    /// Speculative decoding for the Deeper brain with Qwen3-0.6B as the draft (when it's downloaded and on).
+    static func draftArgs(_ brain: Brain?) -> [String] {
+        guard brain == .deeper, UserDefaults.standard.bool(forKey: "airSpeculative") else { return [] }
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub/models--mlx-community--Qwen3-0.6B-4bit")
+        return FileManager.default.fileExists(atPath: dir.path) ? ["--draft", "mlx-community/Qwen3-0.6B-4bit"] : []
     }
 
     func restart(voice: String, persona: String, brain: Brain, chat: String? = nil) {
