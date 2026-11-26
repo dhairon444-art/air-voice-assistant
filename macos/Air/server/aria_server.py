@@ -219,6 +219,8 @@ def main() -> None:
     p.add_argument("--max-tokens", type=int, default=450)
     p.add_argument("--think-budget", type=int, default=256, help="max reasoning tokens when Think first is on")
     p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
+    p.add_argument("--tools-format", default="compact", choices=["template", "compact", "nowrap"],
+                   help="how the inlined tool schema is written (compact saves ~880 tokens)")
     p.add_argument("--persona-first", dest="persona_last", action="store_false",
                    help="old prompt layout (persona before the tool schema): slower personality switches")
     p.add_argument("--temp", type=float, default=0.7)
@@ -376,6 +378,13 @@ def main() -> None:
             full_ = tokenizer.apply_chat_template([{"role": "system", "content": "@@SYS@@"}], tools=TOOLS, tokenize=False)
             block_ = full_.split("@@SYS@@", 1)[1].split("<|im_end|>", 1)[0].strip()
             inline_tools = block_ if block_.startswith("# Tools") and "<tools>" in block_ else ""
+            if inline_tools and args.tools_format != "template":
+                # Same tool schema, compact JSON (no spaces): ~880 fewer tokens to process (~1.2k with nowrap).
+                rows = [json.dumps(t_["function"] if args.tools_format == "nowrap" else t_, ensure_ascii=False,
+                                   separators=(",", ":")) for t_ in TOOLS]
+                head_, rest_ = inline_tools.split("<tools>", 1)
+                tail_ = rest_.split("</tools>", 1)[1]
+                inline_tools = head_ + "<tools>\n" + "\n".join(rows) + "\n</tools>" + tail_
         except Exception:
             inline_tools = ""
 
