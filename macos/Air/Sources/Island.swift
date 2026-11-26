@@ -210,6 +210,7 @@ struct IslandView: View {
             return (web.online ? "Checking online" : "Offline", web.online ? "globe" : "wifi.slash", web.online ? .blue : .orange)
         case .working: return ("Working", "gearshape.fill", .blue)
         case .speaking: return web.voiceMuted ? ("Replying in text", "text.bubble.fill", .white) : ("Speaking", "waveform", .white)
+        case .paused: return ("Paused", "pause.fill", .gray)
         }
     }
 
@@ -288,6 +289,8 @@ struct IslandView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
             HStack(spacing: 8) {
+                IslandButton(symbol: web.paused ? "play.fill" : "pause.fill", on: web.paused,
+                             help: web.paused ? "Resume (⌘P)" : "Pause (⌘P)") { web.togglePause() }
                 IslandButton(symbol: web.micMuted ? "mic.slash.fill" : "mic.fill", on: web.micMuted,
                              help: web.micMuted ? "Unmute mic (⇧⌘M)" : "Mute mic (⇧⌘M)") { web.toggleMicMute() }
                 IslandButton(symbol: web.voiceMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", on: web.voiceMuted,

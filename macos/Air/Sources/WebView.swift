@@ -4,7 +4,7 @@ import WebKit
 
 /// What Aria is doing right now, as shown by the orb and the state label.
 enum TalkState: String {
-    case idle, connecting, listening, hearing, thinking, checking, working, speaking
+    case idle, connecting, listening, hearing, thinking, checking, working, speaking, paused
 
     var title: String {
         switch self {
@@ -16,19 +16,21 @@ enum TalkState: String {
         case .checking: return "Checking online"
         case .working: return "Working on it"
         case .speaking: return "Speaking"
+        case .paused: return "Paused"
         }
     }
 
     var hint: String {
         switch self {
-        case .idle: return "Press Space or click the microphone to start."
+        case .idle: return "Click the orb or press Space to start."
         case .connecting: return "Getting the microphone ready."
         case .listening: return "Just talk. Pause when you're done."
         case .hearing: return "Pause briefly, or press Space, when you're done."
         case .thinking: return "Aria is working out a reply."
         case .checking: return "Looking it up. Only the search words leave your Mac."
         case .working: return "Using a tool on your Mac."
-        case .speaking: return "Talk any time, or press Space, to interrupt."
+        case .speaking: return "Talk any time to interrupt. Click the orb or press Space to pause."
+        case .paused: return "Not listening. Click the orb or press Space to carry on."
         }
     }
 
@@ -41,6 +43,7 @@ enum TalkState: String {
         case .checking: return "globe"
         case .working: return "wrench.and.screwdriver"
         case .speaking: return "waveform"
+        case .paused: return "pause.fill"
         }
     }
 
@@ -137,6 +140,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// Eight frequency bands (0..1) of the voice being heard or spoken, for the orb.
     var bands: [Double] { get { meter.bands } set { meter.bands = newValue } }
     @Published private(set) var voiceMuted = false
+    /// Paused: the mic stops and Aria's speech holds where it is, until resumed (the session stays open).
+    @Published private(set) var paused = false
+    private var stateBeforePause: TalkState = .listening
     private var loadedPort: Int?
     private var statusTimer: Timer?
     private var ariaOpen = false
@@ -255,6 +261,13 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     }
     func stop() { js("window.airStop && window.airStop()") }
     func toggle() { live ? stop() : start() }
+    func setPaused(_ on: Bool) {
+        guard live, on != paused else { return }
+        js("window.airPause && window.airPause(\(on))")
+    }
+    func togglePause() { setPaused(!paused) }
+    /// The orb, Space and ⌃⌥Space: start, then pause and resume. Ending is Esc or the menu.
+    func orbAction() { live ? togglePause() : start() }
     func endTurn() { js("window.airEndTurn && window.airEndTurn()") }
     func interrupt() { js("window.airInterrupt && window.airInterrupt()") }
     /// Pick option i (0-based), or give a free answer with i = -1.
@@ -273,14 +286,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     }
 
     /// Space: start; while you talk, end your turn; while Aria talks, interrupt her.
-    func primaryAction() {
-        if !live { start(); return }
-        switch state {
-        case .speaking: interrupt()
-        case .listening, .hearing: endTurn()
-        default: break
-        }
-    }
+    func primaryAction() { orbAction() }
 
     // MARK: WKUIDelegate – microphone for our own local page only
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -342,10 +348,19 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     private func handleState(_ s: String) {
         switch s {
         case "connecting": state = .connecting
-        case "live": live = true; state = .listening
+        case "live": live = true; paused = false; state = .listening
+        case "paused":
+            if !paused { stateBeforePause = state }
+            paused = true
+            state = .paused
+            micLevel = 0; outLevel = 0
+        case "resumed":
+            paused = false
+            state = stateBeforePause == .paused ? .listening : stateBeforePause
         case "ended", "idle":
             let was = live
             live = false
+            paused = false
             state = .idle
             confirm = nil
             activeTool = nil
@@ -355,6 +370,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if was { onSessionEnded?() }
         default:
             if let t = TalkState(rawValue: s) {
+                if paused { stateBeforePause = t; return }   // shown again on resume
                 state = t
                 if t == .listening || t == .hearing { ariaOpen = false }
             }
@@ -492,6 +508,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             turns = [Turn(speaker: .you, text: "Compare these three phones in a table."), a1,
                      Turn(speaker: .you, text: "Draw the steps of applying for a visa as a flowchart."), a2,
                      Turn(speaker: .you, text: "Give me the sources as links."), a3]
+        case "paused":
+            live = true; paused = true; state = .paused; turns = [you1, aria1]
         case "muted":
             state = .listening; turns = [you1, aria1]; micMuted = true
         case "voicemuted":

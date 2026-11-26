@@ -14,7 +14,7 @@
   const cfg = Object.assign({ voice: 'af_heart', persona: '', personality: '', think: false, web: true }, window.airConfig || {});
   let ctx = null, ws = null, mic = null, capture = null, player = null, src = null, live = false;
   let lastLevelPost = 0, micLevel = 0, outLevel = 0, previewAudio = null;
-  let micMuted = false, voiceMuted = false;
+  let micMuted = false, voiceMuted = false, paused = false;
 
   const post = (msg) => { try { window.webkit.messageHandlers.air.postMessage(msg); } catch (_) {} };
   const text = (data) => new TextDecoder().decode(data.slice(1));
@@ -120,6 +120,8 @@
   function stop(fromClose) {
     const wasLive = live;
     live = false;
+    if (paused && ctx) { paused = false; ctx.resume().catch(() => {}); }
+    paused = false;
     if (ws && !fromClose) { try { ws.close(); } catch (_) {} }
     ws = null;
     for (const n of [src, capture, player]) { if (n) { try { n.disconnect(); } catch (_) {} } }
@@ -143,7 +145,7 @@
   };
   window.airMuteMic = (on) => {
     micMuted = !!on;
-    if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
+    if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted && !paused; });
     sendJSON({ type: 'mic_muted', on: micMuted });
   };
   window.airMuteVoice = (on) => {
@@ -152,6 +154,18 @@
     sendJSON({ type: 'voice_muted', on: voiceMuted });
   };
   window.airStart = () => start();
+  // Pause: suspending the audio graph stops the mic and holds Aria's queued speech exactly where it
+  // is; resuming carries on from there. The server shifts its playback clock by the pause.
+  window.airPause = async (on) => {
+    on = !!on;
+    if (!live || on === paused) return;
+    paused = on;
+    if (mic) mic.getAudioTracks().forEach((t) => { t.enabled = !micMuted && !paused; });
+    sendJSON({ type: 'pause', on });
+    if (ctx) { try { on ? await ctx.suspend() : await ctx.resume(); } catch (_) {} }
+    if (on) { micLevel = outLevel = 0; lastLevelPost = 0; postLevels(); }
+    post({ type: 'state', state: on ? 'paused' : 'resumed' });
+  };
   window.airStop = () => stop(false);
   window.airEndTurn = () => sendJSON({ type: 'end_turn' });
   window.airInterrupt = () => { if (player) player.port.postMessage('reset'); sendJSON({ type: 'stop_speaking' }); };

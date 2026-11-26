@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showHistory() { ui.tab = .history; showMain() }
     @objc func showPersonalities() { ui.tab = .personalities; showMain() }
     @objc func toggleTalking() { ui.tab = .talk; showMain(); web.toggle() }
+    @objc func togglePause() { web.orbAction() }
     @objc func doneTalking() { web.endTurn() }
     @objc func interruptAria() { web.interrupt() }
     @objc func confirmAction() { if web.confirm != nil { web.answer(true) } }
@@ -200,14 +201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
     }
 
-    /// ⌃⌥Space from anywhere: bring Air forward and start talking (or end the conversation).
+    /// ⌃⌥Space from anywhere: bring Air forward and start talking, then pause and resume (like the orb).
     func hotKeyPressed() {
         // With the Island on, talking can happen with the main window hidden.
         if !IslandController.enabled || !web.engineReady {
             ui.tab = .talk
             showMain()
         }
-        web.toggle()
+        web.orbAction()
     }
 
     private func installStatusItem() {
@@ -223,8 +224,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === statusItem?.menu else { return }
         menu.removeAllItems()
-        menu.addItem(withTitle: web.live ? "End Conversation" : "Start Talking", action: #selector(toggleTalking), keyEquivalent: "")
-            .target = self
+        if web.live {
+            menu.addItem(withTitle: web.paused ? "Resume" : "Pause", action: #selector(togglePause), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "End Conversation", action: #selector(toggleTalking), keyEquivalent: "").target = self
+        } else {
+            menu.addItem(withTitle: "Start Talking", action: #selector(toggleTalking), keyEquivalent: "").target = self
+        }
         let ws = menu.addItem(withTitle: ScreenWatch.shared.watching ? "Stop Watching Screen" : "Watch My Screen",
                               action: #selector(toggleScreenWatch), keyEquivalent: "")
         ws.target = self
@@ -329,6 +334,7 @@ struct AirMain {
         let talkItem = NSMenuItem(); main.addItem(talkItem)
         let talk = NSMenu(title: "Conversation")
         talk.addItem(item("Start or End Conversation", #selector(AppDelegate.toggleTalking), "t", target: d))
+        talk.addItem(item("Pause or Resume", #selector(AppDelegate.togglePause), "p", target: d))
         talk.addItem(item("Done Talking", #selector(AppDelegate.doneTalking), "d", target: d))
         talk.addItem(item("Interrupt Aria", #selector(AppDelegate.interruptAria), ".", target: d))
         talk.addItem(.separator())

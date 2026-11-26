@@ -254,7 +254,8 @@ final class OrbScene {
     private func push() {
         let m = meter
         let state = cfg.state, still = cfg.still
-        let mutedNow = cfg.muted && (state == .listening || state == .hearing)
+        // Paused looks like a calm, dimmed mute: no audio motion until it resumes.
+        let mutedNow = (cfg.muted && (state == .listening || state == .hearing)) || state == .paused
         let raw = mutedNow ? 0 : (state == .speaking ? (m?.out ?? 0) : (state == .listening || state == .hearing ? (m?.mic ?? 0) : 0))
         var t = OrbAnimator.Targets()
         t.level = still ? 0 : min(1, raw * 5 * cfg.sensitivity)

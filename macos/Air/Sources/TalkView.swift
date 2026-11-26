@@ -374,14 +374,105 @@ struct ChoiceRow: View {
 
 // MARK: Hero: orb + state
 
+/// The orb is the main button: click to start, click to pause, click to resume. Right-click or a
+/// long press opens End conversation and the mutes. Space and ⌃⌥Space do the same as a click.
+struct OrbButton: View {
+    @EnvironmentObject var web: WebController
+    @Environment(\.airTheme) private var theme
+    let fps: Int
+    @State private var hover = false
+    @State private var pressing = false
+    @State private var menu = false
+
+    private var hint: String {
+        if !web.live { return web.engineReady ? "Click to start" : "Getting ready…" }
+        return web.paused ? "Click to carry on" : "Click to pause"
+    }
+
+    var body: some View {
+        ZStack {
+            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: fps)
+                .frame(width: 220, height: 220)
+                .scaleEffect(pressing ? 0.97 : 1)
+            Circle()
+                .strokeBorder(theme.accent.opacity(hover ? 0.55 : 0), lineWidth: 2)
+                .frame(width: 196, height: 196)
+                .allowsHitTesting(false)
+            if web.paused {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(width: 72, height: 72)
+                    .background(.black.opacity(0.35), in: Circle())
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                    .allowsHitTesting(false)
+            }
+            if hover {
+                Text(hint)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .offset(y: 102)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: 220, height: 220)
+        .contentShape(Circle().inset(by: 14))
+        .onHover { h in
+            withAnimation(.easeOut(duration: 0.15)) { hover = h }
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .onTapGesture { if web.engineReady && web.state != .connecting { web.orbAction() } }
+        .onLongPressGesture(minimumDuration: 0.5, pressing: { p in withAnimation(.easeOut(duration: 0.12)) { pressing = p } }) {
+            if web.live { menu = true }
+        }
+        .contextMenu { OrbMenuItems() }
+        .popover(isPresented: $menu, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 2) { OrbMenuItems(close: { menu = false }) }
+                .buttonStyle(.borderless)
+                .padding(10)
+        }
+        .animation(.easeInOut(duration: 0.2), value: web.paused)
+        .accessibilityElement()
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(!web.live ? "Start talking" : (web.paused ? "Resume" : "Pause"))
+        .accessibilityHint("Right-click for End conversation and mute options")
+        .accessibilityAction { web.orbAction() }
+    }
+}
+
+/// End conversation and the mutes, from the orb's right-click menu or long press.
+struct OrbMenuItems: View {
+    @EnvironmentObject var web: WebController
+    var close: () -> Void = {}
+    var body: some View {
+        if web.live {
+            Button { close(); web.togglePause() } label: {
+                Label(web.paused ? "Resume" : "Pause", systemImage: web.paused ? "play.fill" : "pause.fill")
+            }
+            Button { close(); web.stop() } label: { Label("End conversation", systemImage: "xmark.circle") }
+        } else {
+            Button { close(); web.start() } label: { Label("Start talking", systemImage: "play.fill") }
+                .disabled(!web.engineReady)
+        }
+        Divider()
+        Button { close(); web.toggleMicMute() } label: {
+            Label(web.micMuted ? "Unmute mic" : "Mute mic", systemImage: web.micMuted ? "mic.fill" : "mic.slash.fill")
+        }
+        Button { close(); web.toggleVoiceMute() } label: {
+            Label(web.voiceMuted ? "Unmute voice" : "Mute voice", systemImage: web.voiceMuted ? "speaker.wave.2.fill" : "speaker.slash.fill")
+        }
+    }
+}
+
 struct StateHero: View {
     @EnvironmentObject var web: WebController
     @AppStorage("airOrbFPS") private var orbFPS = 30
     var body: some View {
         VStack(spacing: 14) {
-            Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: orbFPS)
-                .frame(width: 220, height: 220)
-                .accessibilityHidden(true)
+            OrbButton(fps: orbFPS)
             ScreenWatchBadge()
             if let what = web.looking {
                 Label("Looking at \(what)", systemImage: "eye.fill")
@@ -820,6 +911,7 @@ struct ControlBar: View {
                            title: web.micMuted ? "Unmute mic" : "Mute mic", shortcut: "⇧⌘M") { web.toggleMicMute() }
                 MuteButton(on: web.voiceMuted, onSymbol: "speaker.slash.fill", offSymbol: "speaker.wave.2.fill",
                            title: web.voiceMuted ? "Unmute voice" : "Mute voice", shortcut: "⇧⌘V") { web.toggleVoiceMute() }
+                PlayPauseButton()
                 if !web.live {
                     Image(systemName: "headphones").foregroundStyle(.secondary)
                         .help("Headphones recommended: Aria stops talking when she hears you, so through speakers she may interrupt herself.")
@@ -827,28 +919,20 @@ struct ControlBar: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button { web.toggle() } label: {
-                Image(systemName: web.live ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(web.live ? Color.red.gradient : theme.accent.gradient, in: Circle())
-                    .shadow(color: (web.live ? Color.red : theme.accent).opacity(0.35), radius: 8, y: 3)
-            }
-            .buttonStyle(.plain)
-            .disabled(!web.engineReady || web.state == .connecting)
-            .help(web.live ? "End the conversation" : "Start talking (Space)")
-            .accessibilityLabel(web.live ? "End conversation" : "Start talking")
-
             HStack(spacing: 8) {
+                if web.live {
+                    Button { web.stop() } label: { Label("End", systemImage: "xmark.circle") }
+                        .help("End the conversation (Esc)")
+                }
                 if web.state == .speaking {
                     Button { web.interrupt() } label: { Label("Interrupt", systemImage: "hand.raised") }
-                        .help("Stop Aria and listen (Space)")
+                        .help("Stop Aria and listen (⌘.)")
                 } else if web.live && !web.micMuted && (web.state == .listening || web.state == .hearing) {
                     Button { web.endTurn() } label: { Label("Done talking", systemImage: "return") }
-                        .help("End your turn now instead of waiting for the pause (Space)")
+                        .help("End your turn now instead of waiting for the pause (⌘D)")
                 }
-                Text(web.live ? "Space · Esc to end" : "Space to talk").font(.caption).foregroundStyle(.tertiary)
+                Text(web.live ? (web.paused ? "Space to carry on · Esc to end" : "Space to pause · Esc to end") : "Space to talk")
+                    .font(.caption).foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -872,6 +956,17 @@ struct ScreenWatchBadge: View {
             .background(Color.blue.gradient, in: Capsule())
             .accessibilityLabel("Aria is watching your screen")
         }
+    }
+}
+
+/// Start, pause and resume, next to the mutes (same as clicking the orb).
+struct PlayPauseButton: View {
+    @EnvironmentObject var web: WebController
+    var body: some View {
+        let playing = web.live && !web.paused
+        MuteButton(on: web.paused, onSymbol: "play.fill", offSymbol: playing ? "pause.fill" : "play.fill",
+                   title: !web.live ? "Start" : (web.paused ? "Resume" : "Pause"), shortcut: "Space") { web.orbAction() }
+            .disabled(!web.engineReady || web.state == .connecting)
     }
 }
 

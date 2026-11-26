@@ -834,7 +834,9 @@ def main() -> None:
                     if first_audio is None:
                         first_audio = now
                         set_state("speaking")
-                    st["play_until"] = max(st["play_until"], now) + pcm.shape[0] / TTS_RATE
+                    # Paused: the page holds the audio, so the playback clock is frozen at the pause.
+                    clock = st["paused_at"] if st.get("paused_at") else now
+                    st["play_until"] = max(st["play_until"], clock) + pcm.shape[0] / TTS_RATE
                     perf["audio_s"] += pcm.shape[0] / TTS_RATE
                     send(1, pcm16)
                 send(2, (chunk + " ").encode())
@@ -1305,6 +1307,18 @@ def main() -> None:
                         mic_q.put("END")
                     elif data.get("type") == "stop_speaking":
                         barge_in()
+                    elif data.get("type") == "pause":
+                        # The page suspended (or resumed) its audio: nothing plays or is heard meanwhile.
+                        now_ = time.monotonic()
+                        if data.get("on"):
+                            st["paused_at"] = st.get("paused_at") or now_
+                            trace("pause", "Paused")
+                        elif st.get("paused_at"):
+                            held = now_ - st["paused_at"]
+                            if st["play_until"] > st["paused_at"]:
+                                st["play_until"] += held
+                            st["paused_at"] = 0.0
+                            trace("pause", f"Resumed after {held:.0f} s")
                     elif data.get("type") == "persona":
                         if data.get("temp") is not None:
                             try:
