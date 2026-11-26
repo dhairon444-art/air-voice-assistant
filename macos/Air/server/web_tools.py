@@ -227,14 +227,14 @@ class WebSession:
             return {"ok": False, "error": f"There are only {len(self.last_sources)} sources."}
         return self.open_url(self.last_sources[i]["url"])
 
-    # ---- several sites at once (each in a new tab, in order; at most 8 per request) ----
+    # ---- several sites at once (each in a new tab, in order; at most max_tabs per request) ----
     @staticmethod
     def _site(url: str) -> str:
         h = (urlparse(url).hostname or url).removeprefix("www.")
         return h
 
     def _open_many(self, urls: list[str]) -> dict:
-        urls = [u for u in urls if u][:8]
+        urls = [u for u in urls if u][:getattr(self, "max_tabs", 15)]
         bad = [u for u in urls if not re.match(r"^https?://", u)]
         if bad:
             return {"ok": False, "error": f"I can only open web links (http or https), not {bad[0]}."}
@@ -266,7 +266,8 @@ class WebSession:
             queries = [q for q in (a.get("queries") or []) + ([a["query"]] if a.get("query") else []) if q]
             if not queries:
                 return {"ok": False, "error": "Tell me what to open."}
-            count = max(1, min(8, int(a.get("count") or 1)))
+            cap = getattr(self, "max_tabs", 15)
+            count = max(1, min(cap, int(a.get("count") or 1)))
             urls = []
             if len(queries) == 1 and count > 1:
                 r = self.web_search(queries[0])
@@ -274,7 +275,7 @@ class WebSession:
                     return r
                 urls = [x["url"] for x in (getattr(self, "last_results", None) or self.last_sources or [])][:count]
             else:
-                for q in queries[:8]:
+                for q in queries[:cap]:
                     r = self.web_search(q)
                     if not r.get("ok"):
                         return r
@@ -285,7 +286,7 @@ class WebSession:
                 return {"ok": False, "error": "No results to open."}
             return self._open_many(urls)
         if name == "read_page":
-            urls = [u for u in (a.get("urls") or []) + ([a["url"]] if a.get("url") else []) if u][:8]
+            urls = [u for u in (a.get("urls") or []) + ([a["url"]] if a.get("url") else []) if u][:getattr(self, "max_tabs", 15)]
             if len(urls) <= 1:
                 return self.read_page(urls[0] if urls else "")
             each = max(1200, 7000 // len(urls))

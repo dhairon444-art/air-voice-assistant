@@ -87,7 +87,7 @@ TOOLS = [
         "only when the user asks for deep or thorough research.",
         {"question": S, "deep": {"type": "boolean"}}, ["question"]),
     _fn("open_url", "Open one or more web links in the user's default browser, each in a new tab, in order. "
-        "For several sites use urls (up to 8).", {"url": S, "urls": {"type": "array", "items": S}}),
+        "For several sites use urls (up to 15).", {"url": S, "urls": {"type": "array", "items": S}}),
     _fn("web_search_and_open", "Search the web and open results in the browser. One site: query ('open YouTube'). "
         "Several sites: queries, one per site ('open LinkedIn, Seek and Indeed'). The top N results of one search: "
         "query plus count ('open the top 3 results').",
@@ -95,7 +95,7 @@ TOOLS = [
     _fn("open_source", "Open sources from the last answer in the browser: number N, several numbers, or all true "
         "('open these sources').",
         {"number": {"type": "integer"}, "numbers": {"type": "array", "items": {"type": "integer"}}, "all": {"type": "boolean"}}),
-    _fn("read_page", "Fetch the readable text of one or more web pages (url or urls, up to 8) to read, summarise "
+    _fn("read_page", "Fetch the readable text of one or more web pages (url or urls, up to 15) to read, summarise "
         "or fact-check them.", {"url": S, "urls": {"type": "array", "items": S}}),
     _fn("extract_page", "Extract a page's text plus tables, lists, prices, dates and links, ready to save.",
         {"url": S}, ["url"]),
@@ -237,7 +237,7 @@ def describe(name: str, a: dict) -> str:
     if name in MULTI_OPEN:
         one, many = MULTI_OPEN[name]
         items = [str(x) for x in (a.get(many) or [])] + ([str(a[one])] if a.get(one) else [])
-        what = ", ".join((urlparse(x).hostname or x).removeprefix("www.") if x.startswith("http") else x for x in items[:8])
+        what = ", ".join((urlparse(x).hostname or x).removeprefix("www.") if x.startswith("http") else x for x in items[:15])
         n = max(len(items), int(a.get("count") or 0))
         if a.get("all"):
             what = "all the sources"

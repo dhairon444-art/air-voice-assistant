@@ -65,7 +65,7 @@
   function connect() {
     const q = new URLSearchParams({ voice: cfg.voice || '', persona: cfg.persona || '', personality: cfg.personalityName || '',
       think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1', showThinking: cfg.showThinking ? '1' : '0',
-      temp: String(cfg.temperature ?? ''), noise: cfg.noise || 'music', sens: String(cfg.sens ?? 0.5), factcheck: cfg.factcheck || 'smart' });
+      temp: String(cfg.temperature ?? ''), noise: cfg.noise || 'music', sens: String(cfg.sens ?? 0.5), factcheck: cfg.factcheck || 'smart', maxtabs: String(cfg.maxtabs ?? 15), confirmtabs: String(cfg.confirmtabs ?? 10) });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {

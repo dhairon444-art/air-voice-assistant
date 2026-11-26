@@ -101,6 +101,13 @@ final class Prefs: ObservableObject {
     @Published var factCheckPolicy: String = UserDefaults.standard.string(forKey: "airFactCheckPolicy") ?? "smart" {
         didSet { UserDefaults.standard.set(factCheckPolicy, forKey: "airFactCheckPolicy") }
     }
+    /// Settings > Online: tabs Aria may open in one request, and above how many she asks first.
+    @Published var maxTabs: Int = (UserDefaults.standard.object(forKey: "airMaxTabs") as? Int) ?? 15 {
+        didSet { UserDefaults.standard.set(maxTabs, forKey: "airMaxTabs") }
+    }
+    @Published var confirmTabs: Int = (UserDefaults.standard.object(forKey: "airConfirmTabs") as? Int) ?? 10 {
+        didSet { UserDefaults.standard.set(confirmTabs, forKey: "airConfirmTabs") }
+    }
     /// Settings > Online picker: Smart / Always / Off.
     var factCheckChoice: String {
         get { factCheck ? factCheckPolicy : "off" }
@@ -160,12 +167,12 @@ final class Prefs: ObservableObject {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
          "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
-         "noise": noiseMode, "factcheck": factCheckPolicy, "sens": (interruptSensitivity * 100).rounded() / 100,
+         "noise": noiseMode, "factcheck": factCheckPolicy, "maxtabs": maxTabs, "confirmtabs": confirmTabs, "sens": (interruptSensitivity * 100).rounded() / 100,
          "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(factCheckPolicy)|\(Int(interruptSensitivity * 100))"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(factCheckPolicy)|\(maxTabs)|\(confirmTabs)|\(Int(interruptSensitivity * 100))"
     }
 
     @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {

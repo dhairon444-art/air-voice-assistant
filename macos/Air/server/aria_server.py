@@ -565,6 +565,12 @@ def main() -> None:
             "checked": [],                   # topics already checked online this session (Smart fact-check)
         }
         web = WebSession(net, vault, transcribe_audio=transcribe_file)
+        # Settings > Online: tabs per request (research opens many) and when to ask first.
+        try:
+            web.max_tabs = max(1, min(30, int(request.query.get("maxtabs") or 15)))
+            confirm_tabs = max(1, int(request.query.get("confirmtabs") or 10))
+        except ValueError:
+            web.max_tabs, confirm_tabs = 15, 10
         recorder.web_log = web.log
         out_q: asyncio.Queue = asyncio.Queue()
 
@@ -1359,11 +1365,11 @@ def main() -> None:
                     if name in MULTI_OPEN:
                         targs = merge_calls([{"name": name, "arguments": targs}])[0]["arguments"]
                     n_open = open_targets(name, targs, len(web.last_sources or []))
-                    if n_open > 8:
-                        messages.append(tool_message({"ok": False, "error": f"That's {n_open} pages; I open at most 8 at once. "
-                                                      "Ask the user which 8, or open the first 8."}))
+                    if n_open > web.max_tabs:
+                        messages.append(tool_message({"ok": False, "error": f"That's {n_open} pages; the limit is {web.max_tabs} at once "
+                                                      "(Settings, Online). Ask the user which ones, or open the first ones."}))
                         continue
-                    if name in NEEDS_CONFIRMATION or (name != "read_page" and n_open > 5):
+                    if name in NEEDS_CONFIRMATION or (name != "read_page" and n_open > confirm_tabs):
                         for key in ("event_id", "reminder_id"):
                             if targs.get(key) in st["labels"]:
                                 targs["_label"] = st["labels"][targs[key]]

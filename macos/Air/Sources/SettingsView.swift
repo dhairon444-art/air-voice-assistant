@@ -329,6 +329,12 @@ struct OnlineSettings: View {
             } footer: {
                 Text("When the Mac is online, Aria checks facts on the web and says what an answer is based on. Only the search words leave the Mac, never the conversation or your profile. Offline, she answers from what she knows and says she couldn't verify. Sources appear as chips under her reply.")
             }
+            Section("Tabs") {
+                Stepper("Max tabs per request: \(prefs.maxTabs)", value: $prefs.maxTabs, in: 1...30)
+                Stepper("Ask first above: \(prefs.confirmTabs) tabs", value: $prefs.confirmTabs, in: 1...30)
+                Text("For research, Aria can open several sites at once (\"open LinkedIn, Seek and Indeed\", \"open the top 5 results\", \"open the sources\"), each in a new tab, in order.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             SearchBackendSection()
             Section("Research") {
                 Text("Ask Aria to research something (\"research whether…\", \"compare…\") and she plans a few searches, reads 5 to 10 pages at once, and answers with the sites she used, noting where they disagree. It takes about 20 to 30 seconds; say anything to interrupt. Ask for deep research for a longer written brief you can save. The sources and quotes are kept in the session note.")
