@@ -280,8 +280,8 @@ class WebSession:
                     if not r.get("ok"):
                         return r
                     best = (getattr(self, "last_results", None) or self.last_sources or [{}])[0]
-                    if best.get("url") and best["url"] not in urls:
-                        urls.append(best["url"])
+                    if best.get("url") and self._site(best["url"]) not in {self._site(u) for u in urls}:
+                        urls.append(best["url"])   # one tab per site
             if not urls:
                 return {"ok": False, "error": "No results to open."}
             return self._open_many(urls)

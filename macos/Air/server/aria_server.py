@@ -917,7 +917,7 @@ def main() -> None:
             if args.tools and OPEN_ASK.search(text_):
                 hint = ("(To open several sites, make ONE call with a list: open_url with urls, web_search_and_open "
                         "with queries (one per site) or with query and count for the top N results, or open_source "
-                        "with numbers or all true for the sources.) " + hint).strip()
+                        "with all true when they say 'the sources' or 'these sources'.) " + hint).strip()
             if args.tools and WATCH_ASK.search(text_):
                 hint = ("(The user wants Live Screen: call watch_screen with on true now. If they also asked about what "
                         "is on screen, answer from the on_screen_now it returns.) " + hint).strip()
