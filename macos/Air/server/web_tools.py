@@ -240,13 +240,30 @@ class WebSession:
             return {"ok": False, "error": f"I can only open web links (http or https), not {bad[0]}."}
         if (o := self._offline()):
             return o
+        # Never open a site that doesn't exist (a misheard name can turn into a made-up domain).
+        import socket
+        socket.setdefaulttimeout(1.5)
+        missing = []
+        for u in list(urls):
+            try:
+                socket.getaddrinfo(urlparse(u).hostname or "", 443)
+            except OSError:
+                missing.append(self._site(u))
+                urls.remove(u)
+        if not urls:
+            return {"ok": False, "error": "Those sites don't exist: " + ", ".join(missing) + ". Ask the user to say the name again."}
         for i, u in enumerate(urls):
             subprocess.run(["/usr/bin/open", u], check=False, timeout=10)
             self._note("opened", u)
             if i < len(urls) - 1:
                 time.sleep(0.35)   # keeps the tabs in the order asked
         sites = [self._site(u) for u in urls]
-        return {"ok": True, "opened": urls, "summary": f"Opened {len(urls)} tab{'s' if len(urls) != 1 else ''}: " + ", ".join(sites),
+        if missing:
+            sites_note = f" Not opened (no such site): {', '.join(missing)}."
+        else:
+            sites_note = ""
+        return {"ok": True, "opened": urls, "skipped": missing,
+                "summary": f"Opened {len(urls)} tab{'s' if len(urls) != 1 else ''}: " + ", ".join(sites) + sites_note,
                 "note": "Say one short line, for example: 'Opened " + str(len(urls)) + " tabs: " + ", ".join(sites) + ".'"}
 
     def multi(self, name: str, a: dict) -> dict:
@@ -275,16 +292,21 @@ class WebSession:
                     return r
                 urls = [x["url"] for x in (getattr(self, "last_results", None) or self.last_sources or [])][:count]
             else:
+                failed = []
                 for q in queries[:cap]:
                     r = self.web_search(q)
                     if not r.get("ok"):
-                        return r
+                        failed.append(q)   # skip this one; open the rest
+                        continue
                     best = (getattr(self, "last_results", None) or self.last_sources or [{}])[0]
                     if best.get("url") and self._site(best["url"]) not in {self._site(u) for u in urls}:
                         urls.append(best["url"])   # one tab per site
             if not urls:
-                return {"ok": False, "error": "No results to open."}
-            return self._open_many(urls)
+                return {"ok": False, "error": "No results to open (the search didn't come back). Try again, or open the sites directly with open_url."}
+            res = self._open_many(urls)
+            if len(queries) > 1 and failed and res.get("ok"):
+                res["summary"] += f" Couldn't find: {', '.join(failed)}."
+            return res
         if name == "read_page":
             urls = [u for u in (a.get("urls") or []) + ([a["url"]] if a.get("url") else []) if u][:getattr(self, "max_tabs", 15)]
             if len(urls) <= 1:
