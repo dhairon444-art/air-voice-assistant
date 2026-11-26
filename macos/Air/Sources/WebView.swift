@@ -144,6 +144,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var paused = false
     /// When music was last heard and ignored (the \"I'll keep talking\" note).
     @Published private(set) var musicNote: Date?
+    private var autoSay: String?
     private var stateBeforePause: TalkState = .listening
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -317,6 +318,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "ready":
             engineReady = true
             applyMutes()
+            // Test hook (launch argument only): -AirAutoSay "text" starts talking and types one turn.
+            if autoSay == nil, let t = UserDefaults.standard.string(forKey: "AirAutoSay"), !t.isEmpty {
+                autoSay = t
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.start() }
+            }
         case "levels":
             micLevel = body["mic"] as? Double ?? 0
             outLevel = body["out"] as? Double ?? 0
@@ -350,7 +356,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     private func handleState(_ s: String) {
         switch s {
         case "connecting": state = .connecting
-        case "live": live = true; paused = false; state = .listening
+        case "live":
+            live = true; paused = false; state = .listening
+            if let t = autoSay, !t.isEmpty {
+                autoSay = ""
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.say(t) }
+            }
         case "paused":
             if !paused { stateBeforePause = state }
             paused = true
