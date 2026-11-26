@@ -108,6 +108,13 @@ final class Prefs: ObservableObject {
     @Published var confirmTabs: Int = (UserDefaults.standard.object(forKey: "airConfirmTabs") as? Int) ?? 10 {
         didSet { UserDefaults.standard.set(confirmTabs, forKey: "airConfirmTabs") }
     }
+    /// Settings > General: keep the engine loaded with the window closed (unload after N idle hours).
+    @Published var keepReady: Bool = (UserDefaults.standard.object(forKey: "airKeepReady") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(keepReady, forKey: "airKeepReady") }
+    }
+    @Published var idleUnloadHours: Double = (UserDefaults.standard.object(forKey: "airIdleUnloadHours") as? Double) ?? 2 {
+        didSet { UserDefaults.standard.set(idleUnloadHours, forKey: "airIdleUnloadHours") }
+    }
     /// Settings > Online picker: Smart / Always / Off.
     var factCheckChoice: String {
         get { factCheck ? factCheckPolicy : "off" }

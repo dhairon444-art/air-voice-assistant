@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import Combine
 import Carbon.HIToolbox
 import SwiftUI
 
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         if UserDefaults.standard.bool(forKey: "AirIslandDemo") { island?.demo = true; island?.refresh() }
+        installKeepReady()
 
         let args = UserDefaults.standard
         if args.string(forKey: "AirDemo") == "loading" {
@@ -104,9 +106,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.stop()
     }
 
+    // MARK: keep ready in the background
+
+    private var idleTimer: Timer?
+    private var lastActive = Date()
+    private var unloaded = false
+    private var activitySub: AnyCancellable?
+
+    /// Keep Air ready: the engine stays loaded while the window is closed, until it has been idle for
+    /// N hours (Settings > General). Off: closing the window unloads it. It comes back on open or hotkey.
+    private func installKeepReady() {
+        activitySub = web.$state.removeDuplicates().sink { [weak self] _ in self?.lastActive = Date() }
+        idleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkIdle() }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.prefs.keepReady, !self.web.live, self.statusItem != nil else { return }
+                self.unloadEngine(reason: "window closed")
+            }
+        }
+    }
+
+    private func checkIdle() {
+        guard prefs.keepReady, !unloaded, !web.live, !window.isVisible else { return }
+        if Date().timeIntervalSince(lastActive) > prefs.idleUnloadHours * 3600 {
+            unloadEngine(reason: "idle for \(Int(prefs.idleUnloadHours)) h")
+        }
+    }
+
+    private func unloadEngine(reason: String) {
+        guard !unloaded, UserDefaults.standard.string(forKey: "AirDemo") == nil else { return }
+        web.unload()
+        model.stop()
+        unloaded = true
+        NSLog("Air: engine unloaded (\(reason)) to free memory")
+    }
+
+    /// Reload after an unload (window opened, hotkey, menu).
+    func wakeEngine() {
+        lastActive = Date()
+        guard unloaded else { return }
+        unloaded = false
+        model.start(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
+    }
+
     // MARK: windows
 
     func showMain() {
+        wakeEngine()
         window.makeKeyAndOrderFront(nil)
         AppearanceMode.apply()  // window colour for AMOLED, now that the window exists
         NSApp.activate(ignoringOtherApps: true)
@@ -203,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// ⌃⌥Space from anywhere: bring Air forward and start talking, then pause and resume (like the orb).
     func hotKeyPressed() {
+        wakeEngine()
         // With the Island on, talking can happen with the main window hidden.
         if !IslandController.enabled || !web.engineReady {
             ui.tab = .talk

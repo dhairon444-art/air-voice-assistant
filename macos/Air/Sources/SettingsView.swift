@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import EventKit
 import SwiftUI
+import ServiceManagement
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general, appearance, voice, personality, brain, online, privacy, memory
@@ -143,12 +144,32 @@ struct ThemeCard: View {
 
 struct GeneralSettings: View {
     @EnvironmentObject var prefs: Prefs
+    @State private var loginTick = false
     @EnvironmentObject var model: ModelProcess
     var body: some View {
         Form {
             Section("Quick access") {
                 Toggle("Global shortcut ⌃⌥Space to talk to Aria", isOn: $prefs.globalHotkey)
                 Toggle("Show Air in the menu bar", isOn: $prefs.menuBarIcon)
+            }
+            Section {
+                Toggle("Keep Air ready in the background", isOn: $prefs.keepReady)
+                    .disabled(!prefs.menuBarIcon)
+                if prefs.keepReady {
+                    Stepper("Unload after \(Int(prefs.idleUnloadHours)) h idle", value: $prefs.idleUnloadHours, in: 1...24, step: 1)
+                }
+                Toggle("Open Air at login", isOn: Binding(
+                    get: { SMAppService.mainApp.status == .enabled },
+                    set: { on in
+                        do { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
+                        catch { NSLog("Air: login item: \(error.localizedDescription)") }
+                        loginTick.toggle()
+                    }))
+                    .id(loginTick)
+            } header: {
+                Text("Start-up")
+            } footer: {
+                Text("With the window closed, Aria stays loaded in the menu bar so she answers at once (uses about 5 GB of memory). She unloads after the idle time, and loads again when you open Air or press ⌃⌥Space.")
             }
             Section {
                 HStack(spacing: 14) {

@@ -20,7 +20,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/server"
 echo "==> Compiling Swift"
 xcrun swiftc -O -parse-as-library -target arm64-apple-macos14.0 \
   -o "$APP/Contents/MacOS/Air" "$HERE"/Sources/*.swift \
-  -framework AppKit -framework SwiftUI -framework WebKit -framework AVFoundation -framework ScreenCaptureKit -framework Vision -framework SceneKit
+  -framework AppKit -framework SwiftUI -framework WebKit -framework AVFoundation -framework ScreenCaptureKit -framework Vision -framework SceneKit -framework ServiceManagement
 
 echo "==> Resources"
 sed -e "s#__ARIA_PYTHON__#${ARIA_PYTHON}#" "$HERE/Resources/Info.plist" > "$APP/Contents/Info.plist"
