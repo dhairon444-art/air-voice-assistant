@@ -194,6 +194,13 @@ struct ShortcutRow: View {
 
 struct VoiceSettings: View {
     @EnvironmentObject var prefs: Prefs
+    private var noiseNote: String {
+        switch prefs.noiseMode {
+        case "standard": return "Any sound loud enough counts as you talking. Fine in a quiet room."
+        case "headphones": return "Nothing plays into the mic, so Aria reacts quickest. Use with headphones."
+        default: return "Music or a TV in the room won't stop Aria. Speak clearly near the Mac to interrupt."
+        }
+    }
     var body: some View {
         Form {
             Section {
@@ -205,6 +212,28 @@ struct VoiceSettings: View {
                 }
             } footer: {
                 Text("Kokoro voices, chosen by Kokoro's own quality grades. Previews need Aria to be running. Changes apply to the next conversation.")
+            }
+            Section {
+                Picker("Background noise handling", selection: $prefs.noiseMode) {
+                    Text("Standard").tag("standard")
+                    Text("Music-tolerant").tag("music")
+                    Text("Headphones").tag("headphones")
+                }
+                .pickerStyle(.radioGroup)
+                Text(noiseNote).foregroundStyle(.secondary).font(.callout)
+                LabeledContent("Interrupt sensitivity") {
+                    HStack {
+                        Text("Rarely").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $prefs.interruptSensitivity, in: 0...1)
+                            .frame(maxWidth: 220)
+                            .accessibilityValue("\(Int(prefs.interruptSensitivity * 100)) percent")
+                        Text("Quickly").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Talking over Aria")
+            } footer: {
+                Text("Applies right away, even mid-conversation. Music-tolerant mode uses a small on-device speech detector (Silero VAD); nothing leaves your Mac.")
             }
         }
     }

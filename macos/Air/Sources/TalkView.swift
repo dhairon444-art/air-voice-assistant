@@ -494,6 +494,11 @@ struct StateHero: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                if web.musicNote != nil, web.live, !web.paused {
+                    Label("Music detected; I'll keep talking", systemImage: "music.note")
+                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
                 if web.voiceMuted && web.live {
                     Label("Voice off: captions only (⇧⌘V)", systemImage: "speaker.slash.fill")
                         .font(.caption.weight(.medium)).foregroundStyle(.orange)

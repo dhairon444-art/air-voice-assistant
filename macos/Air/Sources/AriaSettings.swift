@@ -99,6 +99,13 @@ final class Prefs: ObservableObject {
     @Published var factCheck: Bool { didSet { d.set(factCheck, forKey: "ariaFactCheck") } }
     /// Show Aria's reasoning and activity in a panel on the Talk screen (and the note). Remembered.
     @Published var showThinking: Bool { didSet { d.set(showThinking, forKey: "airShowThinking") } }
+    /// Settings > Voice: how turn detection treats background sound, and how readily you can interrupt.
+    @Published var noiseMode: String = UserDefaults.standard.string(forKey: "airNoiseMode") ?? "music" {
+        didSet { UserDefaults.standard.set(noiseMode, forKey: "airNoiseMode") }
+    }
+    @Published var interruptSensitivity: Double = (UserDefaults.standard.object(forKey: "airInterruptSens") as? Double) ?? 0.5 {
+        didSet { UserDefaults.standard.set(interruptSensitivity, forKey: "airInterruptSens") }
+    }
     /// The model for typed Chat mode.
     @Published var chatModel: String = UserDefaults.standard.string(forKey: "airChatModel") ?? "mlx-community/Qwen3-8B-4bit" {
         didSet { d.set(chatModel, forKey: "airChatModel") }
@@ -144,11 +151,12 @@ final class Prefs: ObservableObject {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
          "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
+         "noise": noiseMode, "sens": (interruptSensitivity * 100).rounded() / 100,
          "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(Int(interruptSensitivity * 100))"
     }
 
     @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {

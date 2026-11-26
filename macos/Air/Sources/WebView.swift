@@ -142,6 +142,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var voiceMuted = false
     /// Paused: the mic stops and Aria's speech holds where it is, until resumed (the session stays open).
     @Published private(set) var paused = false
+    /// When music was last heard and ignored (the \"I'll keep talking\" note).
+    @Published private(set) var musicNote: Date?
     private var stateBeforePause: TalkState = .listening
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -395,6 +397,12 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
 
     private func handleEvent(_ e: [String: Any]) {
         switch e["t"] as? String {
+        case "music":
+            let now = Date()
+            musicNote = now
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                if self?.musicNote == now { self?.musicNote = nil }
+            }
         case "tool":
             activeTool = (e["phase"] as? String) == "start" ? e["name"] as? String : nil
             if let n = e["name"] as? String, n == "look_at_screen" || n == "look_at_image" {

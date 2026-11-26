@@ -65,7 +65,7 @@
   function connect() {
     const q = new URLSearchParams({ voice: cfg.voice || '', persona: cfg.persona || '', personality: cfg.personalityName || '',
       think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1', showThinking: cfg.showThinking ? '1' : '0',
-      temp: String(cfg.temperature ?? '') });
+      temp: String(cfg.temperature ?? ''), noise: cfg.noise || 'music', sens: String(cfg.sens ?? 0.5) });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {
@@ -114,6 +114,7 @@
     sendJSON({ type: 'mic_muted', on: micMuted });
     sendJSON({ type: 'voice_muted', on: voiceMuted });
     sentPersona = cfg.persona;
+    sentNoise = `${cfg.noise || 'music'}|${cfg.sens ?? 0.5}`;
     post({ type: 'state', state: 'live' });
   }
 
@@ -133,7 +134,7 @@
   }
 
   const sendJSON = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
-  let sentPersona = null;
+  let sentPersona = null, sentNoise = null;
   window.airSetConfig = (c) => {
     Object.assign(cfg, c || {});
     sendJSON({ type: 'show_thinking', on: !!cfg.showThinking });
@@ -142,6 +143,9 @@
       sendJSON({ type: 'persona', text: cfg.persona || '', name: cfg.personalityName || '', temp: cfg.temperature ?? null });
     }
     if (live) sentPersona = cfg.persona;
+    const noise = `${cfg.noise || 'music'}|${cfg.sens ?? 0.5}`;
+    if (live && sentNoise !== null && noise !== sentNoise) sendJSON({ type: 'noise', mode: cfg.noise || 'music', sensitivity: cfg.sens ?? 0.5 });
+    if (live) sentNoise = noise;
   };
   window.airMuteMic = (on) => {
     micMuted = !!on;

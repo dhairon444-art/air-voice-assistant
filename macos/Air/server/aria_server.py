@@ -47,6 +47,7 @@ from memory import (Memory, add_review_to_note, add_summary_to_note, build_summa
 from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
+from vad import FRAME, TurnDetector, use_silero
 from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
@@ -222,6 +223,9 @@ def main() -> None:
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
     p.add_argument("--vad-margin-db", type=float, default=14.0, help="speech must be this far above the noise floor")
     p.add_argument("--vad-floor-db", type=float, default=-48.0, help="and above this absolute level")
+    p.add_argument("--noise-mode", default="music", choices=["standard", "music", "headphones"],
+                   help="turn detection: music-tolerant by default (Settings > Voice)")
+    p.add_argument("--interrupt-sensitivity", type=float, default=0.5, help="0 (rarely interrupts) .. 1 (quick)")
     args = p.parse_args()
 
     watch_parent(args.parent_pid)
@@ -253,6 +257,12 @@ def main() -> None:
     from mlx_audio.stt.utils import load as load_stt
     # Chat mode keeps RAM for a bigger brain: no speech recognition, and the voice loads only for Read aloud.
     speech = {"stt": None if args.chat else load_stt(args.stt), "id": "" if args.chat else args.stt}
+    if not args.chat:
+        # Music-tolerant barge-in: Silero VAD on the CPU if onnxruntime is installed, numpy features otherwise.
+        _here = Path(__file__).resolve().parent.parent
+        _vad_model = next((p_ for p_ in (_here / "models" / "silero_vad.onnx", _here / "Resources" / "models" / "silero_vad.onnx")
+                           if p_.exists()), _here / "models" / "silero_vad.onnx")
+        emit("STATUS", "Speech detector: " + ("Silero VAD (CPU)" if use_silero(str(_vad_model)) else "built-in (numpy)"))
     emit("PROGRESS", "0.14|Loading the voice|2")
     from mlx_audio.tts.utils import load_model as load_tts
     if args.chat:
@@ -526,13 +536,22 @@ def main() -> None:
             set_state("thinking")
             gpu_jobs.put(lambda: reply(audio, t_end, gen_id))
 
+        def make_detector(mode: str, sens: float):
+            return TurnDetector(mode, sens, margin_db=args.vad_margin_db, floor_db=args.vad_floor_db)
+
+        noise_q = request.query.get("noise") or args.noise_mode
+        try:
+            sens_q = float(request.query.get("sens") or args.interrupt_sensitivity)
+        except ValueError:
+            sens_q = args.interrupt_sensitivity
+        detector = {"d": make_detector(noise_q, sens_q)}
+
         def vad_loop():
             """Turn detection in plain numpy (no MLX here: MLX work on a second thread stalls
             the GPU thread's TTS). 20 ms frames, band-limited energy vs an adaptive noise floor."""
-            frame = 480  # 20 ms at 24 kHz
+            frame = FRAME  # 20 ms at 24 kHz
             buf = np.zeros(0, np.float32)
-            noise_db = -60.0
-            prev = 0.0
+            last_music_note = 0.0
             while not st["closed"]:
                 try:
                     item = mic_q.get(timeout=0.2)
@@ -552,18 +571,15 @@ def main() -> None:
                 while buf.shape[0] >= frame:
                     x = buf[:frame]
                     buf = buf[frame:]
-                    # first-order high-pass (~150 Hz) to ignore rumble and handling noise
-                    hp = np.empty_like(x)
-                    hp[0] = x[0] - prev
-                    hp[1:] = x[1:] - 0.94 * x[:-1]
-                    prev = 0.94 * x[-1]
-                    level = 10 * np.log10(float(np.mean(hp * hp)) + 1e-10)
-                    if level < noise_db:
-                        noise_db = level
-                    else:
-                        noise_db += 0.01 * (level - noise_db)  # rise slowly
-                    noise_db = min(max(noise_db, -90.0), -35.0)
-                    speech = level > max(noise_db + args.vad_margin_db, args.vad_floor_db)
+                    det = detector["d"]
+                    rejected = det.rejected
+                    speech = det.is_speech(x)
+                    if (det.rejected > rejected and det.music_present and assistant_audible()
+                            and time.monotonic() - last_music_note > 20):
+                        # Loud sound that isn't you talking: say so once, quietly, and keep going.
+                        last_music_note = time.monotonic()
+                        trace("noise", "Music detected; I'll keep talking")
+                        event(t="music", on=True)
                     if turn["speaking"] or speech:
                         utter.append(x)
                     else:
@@ -573,7 +589,7 @@ def main() -> None:
                     if speech:
                         turn["speech_ms"] += 20
                         turn["silence_ms"] = 0
-                        if not turn["speaking"] and turn["speech_ms"] >= 200:
+                        if not turn["speaking"] and turn["speech_ms"] >= det.onset_ms(assistant_audible()):
                             turn["speaking"] = True
                             utter[:0] = pre[:]
                             pre.clear()
@@ -1307,6 +1323,14 @@ def main() -> None:
                         mic_q.put("END")
                     elif data.get("type") == "stop_speaking":
                         barge_in()
+                    elif data.get("type") == "noise":
+                        # Settings > Voice: background noise handling and interrupt sensitivity, live.
+                        try:
+                            sens_ = float(data.get("sensitivity", detector["d"].sensitivity))
+                        except (TypeError, ValueError):
+                            sens_ = detector["d"].sensitivity
+                        detector["d"] = make_detector(str(data.get("mode") or detector["d"].mode), sens_)
+                        trace("noise", f"Background noise handling: {detector['d'].mode}, sensitivity {sens_:.2f}")
                     elif data.get("type") == "pause":
                         # The page suspended (or resumed) its audio: nothing plays or is heard meanwhile.
                         now_ = time.monotonic()
