@@ -321,6 +321,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             // Test hook (launch argument only): -AirAutoSay "text" starts talking and types one turn.
             if autoSay == nil, let t = UserDefaults.standard.string(forKey: "AirAutoSay"), !t.isEmpty {
                 autoSay = t
+                setMicMuted(true)   // typed test turn only: never pick up the room
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.start() }
             }
         case "levels":
