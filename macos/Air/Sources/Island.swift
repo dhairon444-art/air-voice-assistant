@@ -168,9 +168,13 @@ final class IslandController: ObservableObject {
         let top = notch > 0 ? s.frame.maxY - notch - 4 : s.visibleFrame.maxY - 6
         let frame = NSRect(x: s.frame.midX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // Dynamic-Island feel: growing overshoots a touch, shrinking settles without bounce.
+            let growing = frame.width * frame.height > panel.frame.width * panel.frame.height
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.22
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                ctx.duration = growing ? 0.42 : 0.34
+                ctx.timingFunction = growing ? CAMediaTimingFunction(controlPoints: 0.32, 1.28, 0.6, 1)
+                                             : CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1)
+                ctx.allowsImplicitAnimation = true
                 panel.animator().setFrame(frame, display: true)
             }
         } else {
@@ -194,6 +198,7 @@ struct IslandView: View {
     @EnvironmentObject var web: WebController
     @EnvironmentObject var prefs: Prefs
     @Environment(\.airTheme) private var theme
+    @Environment(\.amoled) private var amoled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// What the Island shows, in priority order.
@@ -214,6 +219,13 @@ struct IslandView: View {
         }
     }
 
+    /// AMOLED: a soft glow in the state colour around the pill.
+    @ViewBuilder private func glow(_ tint: Color) -> some View {
+        if amoled && controller.mode != .dot && !reduceMotion {
+            Capsule().fill(tint.opacity(0.35)).blur(radius: 10).padding(4)
+        }
+    }
+
     private func shortReading(_ s: String) -> String {
         // "Reading 6 pages: a, b, c" -> "Reading 6 pages"
         String(s.split(separator: ":").first ?? Substring(s))
@@ -222,6 +234,7 @@ struct IslandView: View {
     var body: some View {
         let l = look
         VStack(spacing: 0) {
+            Group {
             switch controller.mode {
             case .dot:
                 Capsule().fill(.black)
@@ -234,11 +247,17 @@ struct IslandView: View {
             default:
                 pill(l)
             }
+            }
+            .id(controller.mode)
+            .transition(reduceMotion ? .opacity : .asymmetric(
+                insertion: .modifier(active: IslandMorph(t: 1), identity: IslandMorph(t: 0)).animation(.spring(response: 0.36, dampingFraction: 0.86).delay(0.08)),
+                removal: .modifier(active: IslandMorph(t: 1), identity: IslandMorph(t: 0)).animation(.easeOut(duration: 0.12))))
         }
+        .background(glow(l.tint))
         .frame(width: controller.size(for: controller.mode).width, height: controller.size(for: controller.mode).height)
         .onHover { controller.hovering = $0 }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: controller.mode)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: web.state)
+        .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.8), value: controller.mode)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: web.state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Air: \(l.text)")
     }
@@ -247,12 +266,14 @@ struct IslandView: View {
         HStack(spacing: 8) {
             Orb3DView(state: web.state, meter: web.meter, muted: web.micMuted, fps: 12, tiny: true, animate: !controller.mainVisible)
                 .frame(width: 26, height: 26)
+                .overlay { if web.state == .checking && !reduceMotion && !controller.mainVisible { MoonDot(tint: l.tint) } }
                 .accessibilityHidden(true)
             Text(l.text)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .contentTransition(.opacity)
+                .modifier(Shimmer(on: web.state == .thinking && !reduceMotion && !controller.mainVisible))
             Spacer(minLength: 4)
             if web.voiceMuted { Image(systemName: "speaker.slash.fill").font(.caption).foregroundStyle(.orange) }
             IslandEye()
@@ -359,6 +380,49 @@ struct IslandView: View {
     }
 }
 
+/// Content cross-fade while the Island morphs: fade, blur and a slight scale.
+struct IslandMorph: ViewModifier {
+    let t: Double
+    func body(content: Content) -> some View {
+        content.opacity(1 - t).blur(radius: 6 * t).scaleEffect(1 - 0.06 * t)
+    }
+}
+
+/// Checking online: a small moon circles the tiny orb (10 fps, only while checking).
+struct MoonDot: View {
+    let tint: Color
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+            let a = ctx.date.timeIntervalSinceReferenceDate * 2.4
+            Circle().fill(tint).frame(width: 4, height: 4)
+                .shadow(color: tint, radius: 2)
+                .offset(x: cos(a) * 15, y: sin(a) * 6)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Thinking: a soft highlight sweeps across the label.
+struct Shimmer: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        if on {
+            content.overlay {
+                TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+                    let p = (ctx.date.timeIntervalSinceReferenceDate * 0.8).truncatingRemainder(dividingBy: 1.6) - 0.3
+                    LinearGradient(stops: [.init(color: .clear, location: p - 0.15), .init(color: .white.opacity(0.85), location: p),
+                                           .init(color: .clear, location: p + 0.15)], startPoint: .leading, endPoint: .trailing)
+                        .mask(content)
+                        .blendMode(.plusLighter)
+                }
+                .allowsHitTesting(false)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// Five bars: follow the live level while listening or speaking, ripple gently while busy.
 struct LevelBars: View {
     @ObservedObject var meter: AudioMeter
@@ -389,7 +453,12 @@ struct LevelBars: View {
     }
 
     private func height(_ i: Int) -> CGFloat {
-        if active { return CGFloat(4 + min(1, level * 6) * 14 * weights[i]) }
+        if active {
+            // Real spectrum: bars 0-4 take bands 1-5 (voice range), scaled by the overall level.
+            let b = meter.bands
+            let band = b.count == 8 ? b[i + 1] : weights[i]
+            return CGFloat(4 + min(1, level * 6) * 14 * (0.35 + 0.65 * min(1, band)))
+        }
         if busy { return CGFloat(phase ? (i % 2 == 0 ? 14 : 6) : (i % 2 == 0 ? 6 : 14)) }
         return 4
     }
