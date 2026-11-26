@@ -351,7 +351,7 @@ def main() -> None:
         m = re.search(r"^LANGUAGE:\s*([a-z]{2})\b", text or "", re.M | re.I)
         return m.group(1).lower() if m else "en"
 
-    def base_prompt() -> str:
+    def base_prompt(dated: bool = True) -> str:
         """Constant across sessions (with the tool schema it is ~2.6k tokens, KV-cached)."""
         today = time.strftime("%A %d %B %Y")
         tz = time.strftime("%Z")
@@ -363,7 +363,7 @@ def main() -> None:
                 "or screenshots anywhere; never make up facts, numbers, sources or links; you are always Aria. If the "
                 "personality text conflicts with these, follow these.")
         return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + DISPLAY_RULES + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
-                + f"\n\nToday is {today} (time zone {tz}).")
+                + (f"\n\nToday is {today} (time zone {tz})." if dated else ""))
 
     # Persona last: the chat template puts the ~4k-token tool schema AFTER the system text, so a persona
     # at the top meant every personality switch re-processed ~6k tokens (~20 s on an M4). Rendering the
@@ -385,8 +385,10 @@ def main() -> None:
 
     def build_messages(persona: str) -> list[dict]:
         if inline_tools:
-            return [{"role": "system", "content": inline_tools + "\n\n" + base_prompt() + "\n\n" + memory.system_block()
-                     + "\n\nYour personality and role (it sets your voice and focus; the rules above still apply):\n" + persona}]
+            # The date goes last too, so a new day doesn't invalidate the cached prefix.
+            return [{"role": "system", "content": inline_tools + "\n\n" + base_prompt(dated=False) + "\n\n" + memory.system_block()
+                     + "\n\nYour personality and role (it sets your voice and focus; the rules above still apply):\n" + persona
+                     + time.strftime("\n\nToday is %A %d %B %Y (time zone %Z).")}]
         return [{"role": "system", "content": "Your personality and role:\n" + persona + "\n\n" + base_prompt()},
                 {"role": "system", "content": memory.system_block()}]
 
@@ -394,15 +396,75 @@ def main() -> None:
     # trims back to the shared system-prompt prefix instead of prefilling ~2k tokens again.
     shared = {"cache": make_prompt_cache(lm), "tokens": []}
 
-    def prime(msgs: list) -> None:
+    # Persistent prompt cache: the primed system prompt's KV cache on disk (~0.9 GB for the 4B), so a
+    # launch loads it in under a second instead of re-processing ~6k tokens (~20 s on an M4). Keyed by
+    # brain; the file sharing the longest token prefix is loaded and only the differing tail is processed.
+    pc_dir = Path.home() / "Library/Caches/Air/prompt"
+    pc_key = re.sub(r"[^A-Za-z0-9]+", "_", args.llm.split("/")[-1]) + ("-chat" if args.chat else "")
+    PC_CAP = 2 * 1024 ** 3
+
+    def _common(a: list, b: list) -> int:
+        n = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            n += 1
+        return n
+
+    def pc_load(sys_tokens: list, have: int) -> bool:
+        """Swap in the best saved cache if it shares more of the prompt than what's in memory."""
+        try:
+            best, best_n = None, have
+            for side in sorted(pc_dir.glob(f"{pc_key}-*.json"), key=lambda p_: p_.stat().st_mtime, reverse=True)[:6]:
+                toks = json.loads(side.read_text())["tokens"]
+                n = _common(toks, sys_tokens)
+                if n > best_n + 256:
+                    best, best_n = (side, toks), n
+            if best is None:
+                return False
+            t_ = time.time()
+            from mlx_lm.models.cache import load_prompt_cache
+            cache_ = load_prompt_cache(str(best[0].with_suffix(".safetensors")))
+            shared["cache"], shared["tokens"] = cache_, best[1][: cache_[0].offset]
+            best[0].touch()
+            emit("STATUS", f"Prompt cache loaded from disk ({best_n} of {len(sys_tokens)} tokens) in {time.time() - t_:.1f}s")
+            return True
+        except Exception as exc:
+            emit("STATUS", f"Prompt cache not used: {exc}")
+            return False
+
+    def pc_save() -> None:
+        try:
+            import hashlib
+            from mlx_lm.models.cache import save_prompt_cache
+            pc_dir.mkdir(parents=True, exist_ok=True)
+            toks = list(shared["tokens"])
+            h = hashlib.sha1(json.dumps(toks).encode()).hexdigest()[:12]
+            f_ = pc_dir / f"{pc_key}-{h}.safetensors"
+            if not f_.exists():
+                t_ = time.time()
+                save_prompt_cache(str(f_), shared["cache"])
+                (pc_dir / f"{pc_key}-{h}.json").write_text(json.dumps({"tokens": toks, "model": args.llm}))
+                emit("STATUS", f"Prompt cache saved ({len(toks)} tokens, {f_.stat().st_size / 1e9:.2f} GB) in {time.time() - t_:.1f}s")
+            # Least recently used first out, past the 2 GB cap (only Air's own cache files).
+            files = sorted(pc_dir.glob("*.safetensors"), key=lambda p_: p_.stat().st_mtime, reverse=True)
+            total = 0
+            for p_ in files:
+                total += p_.stat().st_size
+                if total > PC_CAP and p_ != f_:
+                    p_.unlink(missing_ok=True)
+                    p_.with_suffix(".json").unlink(missing_ok=True)
+        except Exception as exc:
+            emit("STATUS", f"Prompt cache not saved: {exc}")
+
+    def prime(msgs: list, disk: bool = False) -> None:
         sys_tokens = list(tokenizer.apply_chat_template(
             msgs, tools=tpl_tools(), add_generation_prompt=False,
             tokenize=True, enable_thinking=False))
-        common = 0
-        for x, y in zip(shared["tokens"], sys_tokens):
-            if x != y:
-                break
-            common += 1
+        common = _common(shared["tokens"], sys_tokens)
+        if disk and common < len(sys_tokens) - 256 and pc_load(sys_tokens, common):
+            common = _common(shared["tokens"], sys_tokens)
+        todo = len(sys_tokens) - common
         if len(shared["tokens"]) > common:
             trim_prompt_cache(shared["cache"], len(shared["tokens"]) - common)
         if common < len(sys_tokens):
@@ -411,6 +473,8 @@ def main() -> None:
                 pass
         off = shared["cache"][0].offset
         shared["tokens"] = sys_tokens[:off]
+        if disk and todo > 512:
+            pc_save()
 
     t_prime = time.time()
     last_persona = {"text": args.text_prompt.strip() or DEFAULT_PERSONA}
@@ -423,7 +487,7 @@ def main() -> None:
     msgs0 = build_messages(last_persona["text"])
     n_tok = len(tokenizer.apply_chat_template(msgs0, tools=tpl_tools(), tokenize=True))
     emit("PROGRESS", f"0.50|Preparing your personality and memory|{n_tok / max(rate, 1):.0f}")
-    prime(msgs0)
+    prime(msgs0, disk=True)
     dt_prime = time.time() - t_prime
     try:
         rates = json.loads(rate_file.read_text()) if rate_file.exists() else {}
@@ -1559,7 +1623,7 @@ def main() -> None:
             emit("ERROR", f"memory update failed: {exc!r}")
         try:
             t1 = time.time()
-            prime(build_messages(last_persona["text"]))  # ready for the next session
+            prime(build_messages(last_persona["text"]), disk=not lock.locked())  # ready for the next session
             emit("STATUS", f"re-primed for next session in {time.time() - t1:.1f}s")
         except Exception as exc:
             emit("ERROR", f"re-prime failed: {exc!r}")
@@ -1608,7 +1672,7 @@ def main() -> None:
         persona = (request.query.get("persona") or "").strip()
         if persona and not lock.locked():
             last_persona["text"] = persona
-            gpu_jobs.put(lambda p=persona: prime(build_messages(p)))
+            gpu_jobs.put(lambda p=persona: prime(build_messages(p), disk=not lock.locked()))
         return web.json_response({"ok": True})
 
     async def handle_task(request):
