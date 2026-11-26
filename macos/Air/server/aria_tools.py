@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlparse
 from datetime import datetime
 
 
@@ -85,12 +86,17 @@ TOOLS = [
         "disputed or surprising claims, recent events, or when the user says research or look into. Set deep to true "
         "only when the user asks for deep or thorough research.",
         {"question": S, "deep": {"type": "boolean"}}, ["question"]),
-    _fn("open_url", "Open a web link in the user's default browser.", {"url": S}, ["url"]),
-    _fn("web_search_and_open", "Search the web and open the best result in the browser (e.g. 'open YouTube').",
-        {"query": S}, ["query"]),
-    _fn("open_source", "Open source number N from the last answer's sources in the browser ('open that source').",
-        {"number": {"type": "integer"}}),
-    _fn("read_page", "Fetch a web page's readable text to read, summarise or fact-check it.", {"url": S}, ["url"]),
+    _fn("open_url", "Open one or more web links in the user's default browser, each in a new tab, in order. "
+        "For several sites use urls (up to 8).", {"url": S, "urls": {"type": "array", "items": S}}),
+    _fn("web_search_and_open", "Search the web and open results in the browser. One site: query ('open YouTube'). "
+        "Several sites: queries, one per site ('open LinkedIn, Seek and Indeed'). The top N results of one search: "
+        "query plus count ('open the top 3 results').",
+        {"query": S, "queries": {"type": "array", "items": S}, "count": {"type": "integer"}}),
+    _fn("open_source", "Open sources from the last answer in the browser: number N, several numbers, or all true "
+        "('open these sources').",
+        {"number": {"type": "integer"}, "numbers": {"type": "array", "items": {"type": "integer"}}, "all": {"type": "boolean"}}),
+    _fn("read_page", "Fetch the readable text of one or more web pages (url or urls, up to 8) to read, summarise "
+        "or fact-check them.", {"url": S, "urls": {"type": "array", "items": S}}),
     _fn("extract_page", "Extract a page's text plus tables, lists, prices, dates and links, ready to save.",
         {"url": S}, ["url"]),
     _fn("get_video_transcript", "Get a video's transcript from its captions (YouTube and other sites).",
@@ -228,6 +234,14 @@ def describe(name: str, a: dict) -> str:
     """The exact sentence Aria says before a confirmation-required tool runs."""
     a = {k: (v.strip().rstrip(".!?;,") if isinstance(v, str) else v) for k, v in a.items()}
     q = " Should I go ahead? Please say yes or no."
+    if name in MULTI_OPEN:
+        one, many = MULTI_OPEN[name]
+        items = [str(x) for x in (a.get(many) or [])] + ([str(a[one])] if a.get(one) else [])
+        what = ", ".join((urlparse(x).hostname or x).removeprefix("www.") if x.startswith("http") else x for x in items[:8])
+        n = max(len(items), int(a.get("count") or 0))
+        if a.get("all"):
+            what = "all the sources"
+        return f"I'm about to open {n or 'several'} tabs: {what}.{q}"
     if name == "quit_app":
         return f"I'm about to quit {a.get('name')}. Any unsaved work there could be lost.{q}"
     if name == "create_event":
@@ -605,3 +619,46 @@ def factcheck_decision(text: str, checked: list | None = None) -> tuple[bool, st
     if _FC_SKIP.search(t):
         return False, "chat, opinion or advice"
     return False, "stable knowledge"
+
+
+# ---------------- several sites in one turn ----------------
+MULTI_OPEN = {"open_url": ("url", "urls"), "web_search_and_open": ("query", "queries"),
+              "open_source": ("number", "numbers"), "read_page": ("url", "urls")}
+OPEN_CAP = 8
+
+
+def merge_calls(calls: list[dict]) -> list[dict]:
+    """Several calls of the same open/read tool in one turn become one call with a list, in order;
+    every other call is kept, in order."""
+    out: list[dict] = []
+    for c in calls:
+        name, a = c.get("name"), dict(c.get("arguments") or {})
+        if name in MULTI_OPEN:
+            one, many = MULTI_OPEN[name]
+            items = list(a.get(many) or []) + ([a[one]] if a.get(one) not in (None, "") else [])
+            prev = next((o for o in out if o["name"] == name), None)
+            if prev is not None and not a.get("all") and not a.get("count"):
+                prev["arguments"].setdefault(many, []).extend(items)
+                continue
+            if items:
+                a.pop(one, None)
+                a[many] = items
+        out.append({"name": name, "arguments": a})
+    return out
+
+
+def open_targets(name: str, a: dict, n_sources: int = 0) -> int:
+    """How many tabs or pages this call would open or read."""
+    if name not in MULTI_OPEN:
+        return 0
+    if name == "open_source" and a.get("all"):
+        return n_sources
+    one, many = MULTI_OPEN[name]
+    n = len(a.get(many) or []) + (1 if a.get(one) not in (None, "") else 0)
+    if name == "web_search_and_open" and a.get("count"):
+        n = max(n, int(a.get("count") or 1))
+    return n
+
+
+OPEN_ASK = re.compile(r"\bopen\b.*(\b(and|,)\b.*\b(and|,)?|\b(all|these|those|the) (sources|links|results|sites)\b|"
+                      r"\btop \d+\b|\b(two|three|four|five|six|seven|eight) (sites|tabs|results|links)\b)", re.I)

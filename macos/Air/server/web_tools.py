@@ -227,6 +227,78 @@ class WebSession:
             return {"ok": False, "error": f"There are only {len(self.last_sources)} sources."}
         return self.open_url(self.last_sources[i]["url"])
 
+    # ---- several sites at once (each in a new tab, in order; at most 8 per request) ----
+    @staticmethod
+    def _site(url: str) -> str:
+        h = (urlparse(url).hostname or url).removeprefix("www.")
+        return h
+
+    def _open_many(self, urls: list[str]) -> dict:
+        urls = [u for u in urls if u][:8]
+        bad = [u for u in urls if not re.match(r"^https?://", u)]
+        if bad:
+            return {"ok": False, "error": f"I can only open web links (http or https), not {bad[0]}."}
+        if (o := self._offline()):
+            return o
+        for i, u in enumerate(urls):
+            subprocess.run(["/usr/bin/open", u], check=False, timeout=10)
+            self._note("opened", u)
+            if i < len(urls) - 1:
+                time.sleep(0.35)   # keeps the tabs in the order asked
+        sites = [self._site(u) for u in urls]
+        return {"ok": True, "opened": urls, "summary": f"Opened {len(urls)} tab{'s' if len(urls) != 1 else ''}: " + ", ".join(sites),
+                "note": "Say one short line, for example: 'Opened " + str(len(urls)) + " tabs: " + ", ".join(sites) + ".'"}
+
+    def multi(self, name: str, a: dict) -> dict:
+        """open_url / web_search_and_open / open_source / read_page with one item or a list."""
+        if name == "open_url":
+            return self._open_many(list(a.get("urls") or []) + ([a["url"]] if a.get("url") else []))
+        if name == "open_source":
+            if not self.last_sources:
+                return {"ok": False, "error": "There are no sources from the last answer to open."}
+            nums = list(range(1, len(self.last_sources) + 1)) if a.get("all") else \
+                [int(n) for n in (a.get("numbers") or []) + ([a["number"]] if a.get("number") else [])] or [1]
+            missing = [n for n in nums if not 1 <= n <= len(self.last_sources)]
+            if missing:
+                return {"ok": False, "error": f"There are only {len(self.last_sources)} sources."}
+            return self._open_many([self.last_sources[n - 1]["url"] for n in nums])
+        if name == "web_search_and_open":
+            queries = [q for q in (a.get("queries") or []) + ([a["query"]] if a.get("query") else []) if q]
+            if not queries:
+                return {"ok": False, "error": "Tell me what to open."}
+            count = max(1, min(8, int(a.get("count") or 1)))
+            urls = []
+            if len(queries) == 1 and count > 1:
+                r = self.web_search(queries[0])
+                if not r.get("ok"):
+                    return r
+                urls = [x["url"] for x in (getattr(self, "last_results", None) or self.last_sources or [])][:count]
+            else:
+                for q in queries[:8]:
+                    r = self.web_search(q)
+                    if not r.get("ok"):
+                        return r
+                    best = (getattr(self, "last_results", None) or self.last_sources or [{}])[0]
+                    if best.get("url") and best["url"] not in urls:
+                        urls.append(best["url"])
+            if not urls:
+                return {"ok": False, "error": "No results to open."}
+            return self._open_many(urls)
+        if name == "read_page":
+            urls = [u for u in (a.get("urls") or []) + ([a["url"]] if a.get("url") else []) if u][:8]
+            if len(urls) <= 1:
+                return self.read_page(urls[0] if urls else "")
+            each = max(1200, 7000 // len(urls))
+            pages, read = [], []
+            for u in urls:
+                r = self.read_page(u, max_chars=each)
+                pages.append({k: r.get(k) for k in ("ok", "title", "url", "text", "error")})
+                if r.get("ok"):
+                    read.append({"title": r["title"], "url": r["url"]})
+            self.last_sources = read
+            return {"ok": bool(read), "summary": f"Read {len(read)} of {len(urls)} pages", "pages": pages}
+        return {"ok": False, "error": f"unknown tool {name}"}
+
     def _fetch(self, url: str) -> tuple[str, str]:
         r = _get(url, timeout=8)
         r.raise_for_status()

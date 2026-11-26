@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, factcheck_decision, topic_words, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -715,8 +715,8 @@ def main() -> None:
                 try:
                     if name == "save_as":
                         result = web.save_as(clean.get("format", ""), clean.get("title"), clean.get("content"))
-                    elif name == "open_source":
-                        result = web.open_source(int(clean.get("number") or 1))
+                    elif name in MULTI_OPEN:
+                        result = web.multi(name, clean)   # one site or a list, each in a new tab
                     elif name == "run_skill":
                         result = run_skill(str(clean.get("skill") or ""), str(clean.get("text") or ""))
                     elif name == "research":
@@ -908,6 +908,10 @@ def main() -> None:
             if args.tools and BROWSER_ASK.search(text_):
                 hint = ("(This is about the user's browser: call read_browser_tabs first, then read_page on a tab "
                         "if needed. It needs no Screen Recording.) " + hint).strip()
+            if args.tools and OPEN_ASK.search(text_):
+                hint = ("(To open several sites, make ONE call with a list: open_url with urls, web_search_and_open "
+                        "with queries (one per site) or with query and count for the top N results, or open_source "
+                        "with numbers or all true for the sources.) " + hint).strip()
             if args.tools and WATCH_ASK.search(text_):
                 hint = ("(The user wants Live Screen: call watch_screen with on true now. If they also asked about what "
                         "is on screen, answer from the on_screen_now it returns.) " + hint).strip()
@@ -1270,7 +1274,8 @@ def main() -> None:
 
                 if (switched := st.pop("announce", None)):
                     say(f"Switched to {switched}.")
-                for _round in range(5):  # at most a few tool calls per turn
+                queued: list[dict] = []   # further tool calls from the same reply, run in order
+                for _round in range(8):  # at most a few tool calls per turn
                     # The first answer streams live for speed. After a tool has run, the follow-up is
                     # checked before it is spoken, so a claim that something was done can be caught.
                     # Stream live; when no action has run yet, each sentence is checked before it is
@@ -1278,8 +1283,15 @@ def main() -> None:
                     guard["hit"] = False
                     guard["source"] = False
                     before = len(spoken)
-                    reply_text, calls = generate(True, check_claims=bool(args.tools and not acted),
-                                                 check_sources=bool(args.tools and not used_tool and not src_nudged))
+                    if queued:
+                        reply_text, calls = "", [queued.pop(0)]
+                    else:
+                        reply_text, calls = generate(True, check_claims=bool(args.tools and not acted),
+                                                     check_sources=bool(args.tools and not used_tool and not src_nudged))
+                        if len(calls) > 1:
+                            calls = merge_calls(calls)
+                            queued = calls[1:]
+                            emit("TOOLCALL", f"{len(calls)} tool calls in one reply: " + ", ".join(c["name"] for c in calls))
                     live = True
                     said_parts += spoken[before:]
                     if cancelled():
@@ -1344,7 +1356,14 @@ def main() -> None:
                         # Not enough options: tell the model, never forward it to the app.
                         messages.append(tool_message({"ok": False, "error": "ask_choice needs a question and 2 to 6 different options."}))
                         continue
-                    if name in NEEDS_CONFIRMATION:
+                    if name in MULTI_OPEN:
+                        targs = merge_calls([{"name": name, "arguments": targs}])[0]["arguments"]
+                    n_open = open_targets(name, targs, len(web.last_sources or []))
+                    if n_open > 8:
+                        messages.append(tool_message({"ok": False, "error": f"That's {n_open} pages; I open at most 8 at once. "
+                                                      "Ask the user which 8, or open the first 8."}))
+                        continue
+                    if name in NEEDS_CONFIRMATION or (name != "read_page" and n_open > 5):
                         for key in ("event_id", "reminder_id"):
                             if targs.get(key) in st["labels"]:
                                 targs["_label"] = st["labels"][targs[key]]
