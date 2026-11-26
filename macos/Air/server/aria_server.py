@@ -1612,6 +1612,8 @@ def main() -> None:
                 user_words = sum(len(t.split()) for _, sp, t in recorder.segments if sp == "You")
                 if user_words >= 8:
                     gpu_jobs.put(lambda p=path: remember(p))
+            while deferred_notes:   # summaries put off while this conversation ran
+                gpu_jobs.put(lambda p=deferred_notes.pop(0): remember(p))
             if speech["id"] != args.stt:
                 gpu_jobs.put(lambda: use_stt(args.stt))
             lats = st["latencies"]
@@ -1623,6 +1625,8 @@ def main() -> None:
                 emit("STATUS", "session end")
             await send_task
 
+    deferred_notes: list[Path] = []
+
     def remember(note: Path) -> None:
         """After a session: summary into the note, new facts into Profile.md, then re-prime."""
         t0 = time.time()
@@ -1631,8 +1635,15 @@ def main() -> None:
             chat = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
                                                  add_generation_prompt=True, tokenize=False,
                                                  enable_thinking=False)
-            out = "".join(r.text for r in stream_generate(lm, tokenizer, chat, max_tokens=800,
-                                                          sampler=make_sampler(temp=0.2)))
+            parts = []
+            for r in stream_generate(lm, tokenizer, chat, max_tokens=800, sampler=make_sampler(temp=0.2)):
+                if lock.locked():
+                    # A new conversation started: it goes first; this summary runs after it ends.
+                    deferred_notes.append(note)
+                    emit("MEMORY", f"summary deferred after {time.time() - t0:.1f}s: a new conversation started")
+                    return
+                parts.append(r.text)
+            out = "".join(parts)
             data = parse_json_object(out)
             summary = str(data.get("summary", "")).strip()
             if summary:
