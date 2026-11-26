@@ -555,6 +555,11 @@ final class ToolRunner {
         let market = Marketplace.shared
         let choices: [(id: String, name: String)] = Personas.presets.map { ($0.id, $0.name) } +
             market.installedPersonalities.map { ($0.id, $0.name) }
+        // "Back to Aria": the general assistant (hand-offs to a specialist end here).
+        if ["aria", "general", "default", "normal", "yourself"].contains(key), let prefs = AppDelegate.shared?.prefs {
+            prefs.personality = "analyst"
+            return ok("Back to Aria", ["name": "Aria", "persona": prefs.persona])
+        }
         let hit = choices.first { $0.name.lowercased().filter(\.isLetter) == key } ??
             choices.first { !key.isEmpty && $0.name.lowercased().filter(\.isLetter).contains(key) }
         guard let hit, let prefs = AppDelegate.shared?.prefs else {

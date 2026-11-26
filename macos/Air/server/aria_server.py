@@ -912,7 +912,8 @@ def main() -> None:
                                   r"look into|dig into|investigate|compare)\b|\bdeep research\b", re.I)
 
         QUIZ_ASK = re.compile(r"\b(quiz|test me|multiple choice)\b", re.I)
-        SWITCH_ASK = re.compile(r"\b(switch|change|swap)\s+(to|into|personality|your personality)\b|\bbe (the|my) \w+ (now|instead)\b", re.I)
+        SWITCH_ASK = re.compile(r"\b(switch|change|swap)\s+(to|into|personality|your personality)\b|\bbe (the|my) \w+ (now|instead)\b|"
+                                r"\bback to (aria|normal|yourself)\b|\bswitch (me )?back\b", re.I)
         BROWSER_ASK = re.compile(r"\b(my )?(browser|tabs?|safari|chrome|tabbit|arc)\b", re.I)
         WATCH_ASK = re.compile(r"\b(watch|keep an eye on|monitor|follow) (my|the) screen\b|\blive screen\b", re.I)
         CAL_ASK = re.compile(r"\b(my )?(calendar|schedule|agenda|meetings?|appointments?|reminders?)\b|"
@@ -986,7 +987,17 @@ def main() -> None:
             if orch_mode == "off" or not text_.strip():
                 return ""
             t_ = time.monotonic()
-            res = router.route(text_)
+            # "Ask the Mentor ...": that specialist's lens for this turn, no routing.
+            low_ = " " + re.sub(r"[^a-z ]", " ", text_.lower()) + " "
+            named = None
+            if re.search(r"\b(ask|what would|what does|get) ", low_):
+                for p_ in specialists.values():
+                    base_ = re.sub(r"\s*\(.*?\)", "", p_["name"]).lower()      # "Lawyer (general information)" -> "lawyer"
+                    if re.search(r"\b(ask|what would|what does|get) (the |my |a |an )?" + re.escape(base_) + r"\b", low_):
+                        named = p_
+                        break
+            res = ({"mode": "lens", "id": named["id"], "name": named["name"], "reason": "you asked for them", "score": 1.0}
+                   if named else router.route(text_))
             if res["mode"] == "unsure":
                 # Close call: the loaded brain picks from the shortlist (a few tokens).
                 cands = [specialists[c] for c in res.get("candidates", [])[:4]]
