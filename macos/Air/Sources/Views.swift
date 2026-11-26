@@ -82,6 +82,7 @@ struct ContentView: View {
         .onChange(of: prefs.personality) { _, _ in web.prime(persona: prefs.persona) }
         // Chat unloads the voice engine (more RAM for a bigger model); Talk brings it back.
         .onChange(of: ui.tab) { _, t in
+            if UserDefaults.standard.string(forKey: "AirDemo") != nil { return }   // screenshots: no engine
             if t == .chat && model.chatModel != prefs.chatModel {
                 web.stop()
                 model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain, chat: prefs.chatModel)
@@ -100,7 +101,7 @@ struct ContentView: View {
 
     @ViewBuilder var chatView: some View {
         switch model.state {
-        case .ready where model.chatModel != nil: ChatView()
+        case .ready where model.chatModel != nil || UserDefaults.standard.string(forKey: "AirDemo") != nil: ChatView()
         case .failed(let msg):
             FailedView(message: msg) { model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain, chat: prefs.chatModel) }
         default: LoadingView()
