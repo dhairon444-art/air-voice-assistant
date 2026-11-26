@@ -801,6 +801,13 @@ struct TurnView: View {
                     Image(systemName: "sparkle").foregroundStyle(theme.accent).padding(.top, 3)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
+                        if let lens = turn.lens {
+                            Text("\(lens) lens")
+                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(.quaternary.opacity(0.5), in: Capsule())
+                                .help("Aria answered through this specialist's expertise (Settings › Orchestrator)")
+                        }
                         Text(turn.text.trimmingCharacters(in: .whitespaces))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)

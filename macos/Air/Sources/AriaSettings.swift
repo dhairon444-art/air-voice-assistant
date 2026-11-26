@@ -115,6 +115,10 @@ final class Prefs: ObservableObject {
     @Published var idleUnloadHours: Double = (UserDefaults.standard.object(forKey: "airIdleUnloadHours") as? Double) ?? 2 {
         didSet { UserDefaults.standard.set(idleUnloadHours, forKey: "airIdleUnloadHours") }
     }
+    /// Orchestrator: auto (bring in a specialist's lens when it fits), ask first, or off.
+    @Published var orchestrator: String = UserDefaults.standard.string(forKey: "airOrchestrator") ?? "auto" {
+        didSet { UserDefaults.standard.set(orchestrator, forKey: "airOrchestrator") }
+    }
     /// Settings > Online picker: Smart / Always / Off.
     var factCheckChoice: String {
         get { factCheck ? factCheckPolicy : "off" }
@@ -174,12 +178,13 @@ final class Prefs: ObservableObject {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
          "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
-         "noise": noiseMode, "factcheck": factCheckPolicy, "maxtabs": maxTabs, "confirmtabs": confirmTabs, "sens": (interruptSensitivity * 100).rounded() / 100,
+         "noise": noiseMode, "factcheck": factCheckPolicy, "maxtabs": maxTabs, "orch": orchestrator,
+         "specialists": MainActor.assumeIsolated { Marketplace.shared.installedPersonalities.map(\.id).joined(separator: ",") }, "confirmtabs": confirmTabs, "sens": (interruptSensitivity * 100).rounded() / 100,
          "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(factCheckPolicy)|\(maxTabs)|\(confirmTabs)|\(Int(interruptSensitivity * 100))"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(factCheckPolicy)|\(maxTabs)|\(orchestrator)|\(confirmTabs)|\(Int(interruptSensitivity * 100))"
     }
 
     @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {

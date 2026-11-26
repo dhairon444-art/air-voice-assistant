@@ -153,6 +153,14 @@ struct GeneralSettings: View {
                 Toggle("Show Air in the menu bar", isOn: $prefs.menuBarIcon)
             }
             Section {
+                Picker("Orchestrator", selection: $prefs.orchestrator) {
+                    Text("Auto").tag("auto"); Text("Ask first").tag("ask"); Text("Off").tag("off")
+                }
+                .pickerStyle(.segmented)
+                Text("Aria answers through the installed specialist that fits each question (a small \"lens\" chip shows which). Ask first: she offers to bring them in. Off: one personality, as before. Routing runs on this Mac in a few milliseconds.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } header: { Text("Orchestrator") }
+            Section {
                 Toggle("Keep Air ready in the background", isOn: $prefs.keepReady)
                     .disabled(!prefs.menuBarIcon)
                 if prefs.keepReady {

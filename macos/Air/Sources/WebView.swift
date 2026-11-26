@@ -66,6 +66,8 @@ struct Turn: Identifiable, Equatable {
     var files: [URL] = []
     var blocks: [DisplayBlock] = []
     var interrupted = false
+    /// The specialist whose lens shaped this reply (Orchestrator), e.g. "🧾 Financial Analyst".
+    var lens: String?
     let time = Date()
 }
 
@@ -145,6 +147,7 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// When music was last heard and ignored (the \"I'll keep talking\" note).
     @Published private(set) var musicNote: Date?
     private var autoSay: String?
+    private var pendingLens: String?
     private var stateBeforePause: TalkState = .listening
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -399,7 +402,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         if ariaOpen, let i = turns.lastIndex(where: { $0.speaker == .aria }) {
             turns[i].text += piece
         } else {
-            turns.append(Turn(speaker: .aria, text: piece))
+            var t = Turn(speaker: .aria, text: piece)
+            t.lens = pendingLens
+            pendingLens = nil
+            turns.append(t)
             ariaOpen = true
         }
     }
@@ -413,6 +419,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
 
     private func handleEvent(_ e: [String: Any]) {
         switch e["t"] as? String {
+        case "lens":
+            let label = [(e["emoji"] as? String) ?? "", (e["name"] as? String) ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+            if (e["ask"] as? Bool) != true { pendingLens = label }
         case "music":
             let now = Date()
             musicNote = now
