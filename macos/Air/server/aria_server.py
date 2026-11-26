@@ -291,6 +291,22 @@ def main() -> None:
         except Exception as exc:
             emit("STATUS", f"Draft model not used: {exc}")
 
+    # Orchestrator: route each request to a specialist "lens" (bge-small on the CPU, ~3 ms).
+    router, specialists = None, {}
+    _res = Path(__file__).resolve().parent.parent
+    try:
+        from router import Router
+        _rdir = next(p_ for p_ in (_res / "models" / "bge-small", _res / "Resources" / "models" / "bge-small")
+                     if (p_ / "model_quantized.onnx").exists())
+        _prof = next(p_ for p_ in (_res / "professionals.json", _res / "Resources" / "professionals.json") if p_.exists())
+        specialists = {p_["id"]: p_ for p_ in json.loads(_prof.read_text())["items"]
+                       if p_["id"] not in ("analyst", "freespirit", "sparring")}
+        router = Router(str(_rdir))
+        router.set_specialists(list(specialists.values()))
+        emit("STATUS", f"Orchestrator: {len(specialists)} specialists indexed")
+    except Exception as exc:
+        emit("STATUS", f"Orchestrator off: {exc}")
+
     def new_cache():
         return make_prompt_cache(lm) + (make_prompt_cache(draft) if draft is not None else [])
 
@@ -567,6 +583,13 @@ def main() -> None:
         web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
         # Smart (default): check only when it's needed; Always: every factual turn; Off.
         fc_mode = (request.query.get("factcheck") or "smart") if web_on else "off"
+        # Orchestrator: auto (default) / ask / off. Off as well when a specialist was picked directly.
+        orch_mode = request.query.get("orch") or "auto"
+        if router is None or personality in {p_["name"] for p_ in specialists.values()}:
+            orch_mode = "off"
+        allowed = [x for x in (request.query.get("specialists") or "").split(",") if x in specialists]
+        if allowed and orch_mode != "off" and set(allowed) != set(router.ids):
+            router.set_specialists([specialists[x] for x in allowed])
         memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
         last_persona["text"] = persona
         recorder = SessionRecorder(vault, voice, persona, mode="Chat" if args.chat else "Aria", model_id=model_ids,
@@ -917,10 +940,45 @@ def main() -> None:
             return {"ok": True, "summary": f"Ran {match['name']}", "output": out[:2500],
                     "note": "Tell the user the gist in a few spoken sentences; offer to save it with save_as."}
 
+        def route_lens(text_: str) -> str:
+            """Lens mode: one generation, answered through the best-fitting specialist's expertise."""
+            if orch_mode == "off" or not text_.strip():
+                return ""
+            t_ = time.monotonic()
+            res = router.route(text_)
+            if res["mode"] == "unsure":
+                # Close call: the loaded brain picks from the shortlist (a few tokens).
+                cands = [specialists[c] for c in res.get("candidates", [])[:4]]
+                menu = "\n".join(f"{chr(65 + i)}) {c['name']}: {c['expertise']}" for i, c in enumerate(cands))
+                ans = side_llm([{"role": "user", "content": f"Request: {text_[:400]}\n\nWhich expert fits best?\n{menu}\n"
+                                 f"{chr(65 + len(cands))}) none of them\nAnswer with one letter."}], 2).strip().upper()[:1]
+                k = ord(ans) - 65 if ans else -1
+                if 0 <= k < len(cands):
+                    res.update(mode="lens", id=cands[k]["id"], name=cands[k]["name"], reason="picked by the brain")
+                else:
+                    res.update(mode="aria", reason="the brain kept it with Aria")
+            ms = (time.monotonic() - t_) * 1000
+            if res["mode"] != "lens":
+                trace("route", f"Aria answers herself ({res.get('reason', '')}, {ms:.0f} ms)")
+                return ""
+            p_ = specialists[res["id"]]
+            trace("route", f"Lens: {p_['name']} ({res.get('reason')}, match {res.get('score', 0):.2f}, {ms:.0f} ms)")
+            event(t="lens", id=p_["id"], name=p_["name"], emoji=p_.get("emoji", ""), ask=orch_mode == "ask")
+            if orch_mode == "ask":
+                return (f"(This looks like a question for the {p_['name']}. Ask the user in one short sentence whether "
+                        f"they'd like the {p_['name']}'s view; if they've already said yes, answer through it.)")
+            return (f"(Specialist lens for this answer: think like a {p_['name']} ({p_['role']}). Expertise: {p_['expertise']}. "
+                    f"Methods: {', '.join(p_.get('frameworks') or [])}. Always: {'; '.join((p_.get('dos') or [])[:2])}. "
+                    f"Never: {'; '.join((p_.get('donts') or [])[:2])}. Stay Aria with the same rules; don't mention the lens."
+                    + (f" When it matters, say: {p_['disclaimer']}" if p_.get("disclaimer") else "") + ")")
+
         def with_recall(text_: str) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
             the user message, after the cached prefix, so the KV cache stays valid."""
             hint = net_hint(text_)
+            lens = route_lens(text_)
+            if lens:
+                hint = (lens + "\n" + hint).strip()
             sc = st.get("screen")
             if sc and not sc.get("excluded"):
                 hint = (f"(On screen now, from Live Screen: {sc['app']} - {sc['window']}. Visible text (OCR, may be partial): "
