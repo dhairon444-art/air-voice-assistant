@@ -550,3 +550,58 @@ def classify_reply(text: str) -> str:
     if _YES.search(t):
         return "yes"
     return "unclear"
+
+
+# ---------------- Smart fact-check: decide cheaply (rules only, no generation) ----------------
+
+_FC_ASKED = re.compile(r"\b(check (that|this|it|again)|fact[- ]?check|source[sd]?\??|citation|are you sure|is that (true|right|correct|accurate)|"
+                       r"really\?|prove it|verify|look it up|google it|search (for )?(it|that))\b", re.I)
+_FC_RECENT = re.compile(r"\b(news|latest|recent(ly)?|current(ly)?|today|tonight|yesterday|tomorrow|this (week|month|year|season)|"
+                        r"right now|nowadays|so far|price[sd]?|cost(s)? now|stock|shares?|exchange rate|score[sd]?|results?|standings|"
+                        r"weather|forecast|schedule[sd]?|fixtures?|opening hours|open (now|today)|release[sd]?|launch(ed|es)?|"
+                        r"election|poll[sd]?|who (won|is winning|is the (current )?(ceo|president|prime minister|leader|champion))|"
+                        r"20(2[5-9]|3\d))\b", re.I)
+_FC_CLAIM = re.compile(r"(\bright\?|\bisn'?t (it|that|he|she)\b|\baren'?t they\b|\bi (heard|read|saw) (that|somewhere|online)?|\bthey say\b|"
+                       r"\bapparently\b|\bis it true\b|\bdid you know\b|\beveryone knows\b|\bscientists (say|proved)\b|"
+                       r"\bso (grades|it|that|this) (doesn'?t|don'?t) matter\b|\bproves? that\b)", re.I)
+_FC_SPECIFIC = re.compile(r"\b(how (many|much)|what (percent|percentage|share|proportion)|population of|statistics?|stats|"
+                          r"average (salary|price|cost|age)|rate of|who said|quote|exact(ly)?|record (for|holder)|"
+                          r"ranked|ranking|net worth|revenue|market (size|cap|share)|gdp)\b", re.I)
+_FC_STAKES = re.compile(r"\b(dose|dosage|mg\b|milligrams?|medication|drug interactions?|side effects?|symptoms? of|"
+                        r"is it (safe|legal)|legal(ly)?|law|visa|tax(es)?|interest rate|super(annuation)?|pension|"
+                        r"mortgage rates?|insurance (cover|policy))\b", re.I)
+_FC_SKIP = re.compile(r"^\W*(hi|hey|hello|thanks|thank you|ok(ay)?|cool|nice|great|bye|good (morning|night))\b|"
+                      r"\b(what do you think|your (opinion|view|take)|would you rather|should i|how (do|can|should) i|"
+                      r"tips|advice|help me|ideas? for|explain|what does .* mean|define|definition|how does .* work|"
+                      r"tell me a (story|joke)|write|poem|imagine|pretend)\b", re.I)
+_STOP = set("the a an is are was were be to of in on at for and or but with about what who when where why how do does did "
+            "you your my me i it that this there their they them can could would should will just really tell please "
+            "check sure true right".split())
+
+
+def topic_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z][a-z0-9']{2,}", (text or "").lower()) if w not in _STOP}
+
+
+def factcheck_decision(text: str, checked: list | None = None) -> tuple[bool, str]:
+    """Smart fact-check: (check online?, reason for Show thinking). Cheap rules; no extra generation."""
+    t = (text or "").strip()
+    if not t:
+        return False, "nothing to check"
+    if _FC_ASKED.search(t):
+        return True, "you asked to check"
+    words = topic_words(t)
+    for prev in checked or []:
+        if words and len(words & prev) >= max(1, int(0.5 * len(words))):
+            return False, "already checked this topic"
+    if _FC_RECENT.search(t):
+        return True, "recent or time-sensitive"
+    if _FC_CLAIM.search(t):
+        return True, "a claim to confirm or correct"
+    if _FC_STAKES.search(t) and not re.search(r"\b(explain|what is|what are|how does)\b", t, re.I):
+        return True, "high stakes: specifics"
+    if _FC_SPECIFIC.search(t):
+        return True, "specific numbers or quotes"
+    if _FC_SKIP.search(t):
+        return False, "chat, opinion or advice"
+    return False, "stable knowledge"

@@ -311,7 +311,17 @@ struct OnlineSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Online fact-check", isOn: $prefs.factCheck)
+                Picker("Fact-check", selection: $prefs.factCheckChoice) {
+                    Text("Smart").tag("smart")
+                    Text("Always").tag("always")
+                    Text("Off").tag("off")
+                }
+                .pickerStyle(.segmented)
+                Text(prefs.factCheckChoice == "smart"
+                     ? "Checks online only when it matters: recent or time-sensitive questions, claims that look doubtful, specific numbers or quotes, health, legal and money specifics, or when you ask (\"are you sure?\"). Chat, opinions, advice and well-known facts are answered straight away."
+                     : prefs.factCheckChoice == "always" ? "Checks online for every factual question. Slower: about 3 to 4 seconds more on those turns."
+                     : "Never checks online unless you ask Aria to look something up.")
+                    .font(.callout).foregroundStyle(.secondary)
                 LabeledContent("Status") {
                     Label(web.online ? "Online" : "Offline", systemImage: web.online ? "wifi" : "wifi.slash")
                         .foregroundStyle(web.online ? Color.secondary : Color.orange)

@@ -97,6 +97,15 @@ final class Prefs: ObservableObject {
     @Published var thinkFirst: Bool { didSet { d.set(thinkFirst, forKey: "ariaThinkFirst") } }
     /// Check facts online when the Mac is online (search queries only). On by default.
     @Published var factCheck: Bool { didSet { d.set(factCheck, forKey: "ariaFactCheck") } }
+    /// When fact-check is on: "smart" (only when needed, the default) or "always".
+    @Published var factCheckPolicy: String = UserDefaults.standard.string(forKey: "airFactCheckPolicy") ?? "smart" {
+        didSet { UserDefaults.standard.set(factCheckPolicy, forKey: "airFactCheckPolicy") }
+    }
+    /// Settings > Online picker: Smart / Always / Off.
+    var factCheckChoice: String {
+        get { factCheck ? factCheckPolicy : "off" }
+        set { if newValue == "off" { factCheck = false } else { factCheckPolicy = newValue; factCheck = true } }
+    }
     /// Show Aria's reasoning and activity in a panel on the Talk screen (and the note). Remembered.
     @Published var showThinking: Bool { didSet { d.set(showThinking, forKey: "airShowThinking") } }
     /// Settings > Voice: how turn detection treats background sound, and how readily you can interrupt.
@@ -151,12 +160,12 @@ final class Prefs: ObservableObject {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
          "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
-         "noise": noiseMode, "sens": (interruptSensitivity * 100).rounded() / 100,
+         "noise": noiseMode, "factcheck": factCheckPolicy, "sens": (interruptSensitivity * 100).rounded() / 100,
          "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]
     }
     /// Changes whenever engineConfig would change (for onChange).
     var engineConfigKey: String {
-        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(Int(interruptSensitivity * 100))"
+        "\(voice)|\(personality)|\(persona.hashValue)|\(thinkFirst)|\(factCheck)|\(showThinking)|\(brain.rawValue)|\(personality)|\(noiseMode)|\(factCheckPolicy)|\(Int(interruptSensitivity * 100))"
     }
 
     @Published var globalHotkey: Bool = (UserDefaults.standard.object(forKey: "airGlobalHotkey") == nil || UserDefaults.standard.bool(forKey: "airGlobalHotkey")) {

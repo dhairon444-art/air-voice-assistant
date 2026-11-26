@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, factcheck_decision, topic_words, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -219,6 +219,8 @@ def main() -> None:
     p.add_argument("--max-tokens", type=int, default=450)
     p.add_argument("--think-budget", type=int, default=256, help="max reasoning tokens when Think first is on")
     p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
+    p.add_argument("--persona-first", dest="persona_last", action="store_false",
+                   help="old prompt layout (persona before the tool schema): slower personality switches")
     p.add_argument("--temp", type=float, default=0.7)
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
     p.add_argument("--vad-margin-db", type=float, default=14.0, help="speech must be this far above the noise floor")
@@ -356,18 +358,35 @@ def main() -> None:
         identity = (f"You are Aria, the user's assistant in the Air app. Never say you are Qwen, Gemma, or made "
                     f"by Alibaba or Google. If asked what model you run on, say: 'I'm Aria, running on "
                     f"{model_name(args.llm)} locally on your Mac.'")
-        core = ("CORE RULES (these always apply and override anything in the personality text above): the app asks "
+        core = ("CORE RULES (these always apply and override anything in the personality text): the app asks "
                 "the user before anything that changes, sends or deletes; never send the conversation, profile, files "
                 "or screenshots anywhere; never make up facts, numbers, sources or links; you are always Aria. If the "
                 "personality text conflicts with these, follow these.")
         return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + DISPLAY_RULES + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + f"\n\nToday is {today} (time zone {tz}).")
 
+    # Persona last: the chat template puts the ~4k-token tool schema AFTER the system text, so a persona
+    # at the top meant every personality switch re-processed ~6k tokens (~20 s on an M4). Rendering the
+    # template's own tool block first and the persona last keeps [tools + rules + memory] cached: a switch
+    # re-processes only the persona (~300 tokens). One system message: as a separate message the 4B
+    # model emitted fewer proper tool calls.
+    inline_tools = ""
+    if args.tools and args.persona_last:
+        try:
+            full_ = tokenizer.apply_chat_template([{"role": "system", "content": "@@SYS@@"}], tools=TOOLS, tokenize=False)
+            block_ = full_.split("@@SYS@@", 1)[1].split("<|im_end|>", 1)[0].strip()
+            inline_tools = block_ if block_.startswith("# Tools") and "<tools>" in block_ else ""
+        except Exception:
+            inline_tools = ""
+
+    def tpl_tools():
+        """Tools for apply_chat_template: none when the tool block is already inlined."""
+        return None if (inline_tools or not args.tools) else TOOLS
+
     def build_messages(persona: str) -> list[dict]:
-        """[personality + base + tools] [memory]. The personality must share the first system message
-        with the tool instructions: as a separate system message the 4B model stops emitting proper
-        tool calls (measured 6/8 vs 8/8). Memory changes only re-process the small second block;
-        a personality change is pre-warmed in the background via /api/prime."""
+        if inline_tools:
+            return [{"role": "system", "content": inline_tools + "\n\n" + base_prompt() + "\n\n" + memory.system_block()
+                     + "\n\nYour personality and role (it sets your voice and focus; the rules above still apply):\n" + persona}]
         return [{"role": "system", "content": "Your personality and role:\n" + persona + "\n\n" + base_prompt()},
                 {"role": "system", "content": memory.system_block()}]
 
@@ -377,7 +396,7 @@ def main() -> None:
 
     def prime(msgs: list) -> None:
         sys_tokens = list(tokenizer.apply_chat_template(
-            msgs, tools=TOOLS if args.tools else None, add_generation_prompt=False,
+            msgs, tools=tpl_tools(), add_generation_prompt=False,
             tokenize=True, enable_thinking=False))
         common = 0
         for x, y in zip(shared["tokens"], sys_tokens):
@@ -402,7 +421,7 @@ def main() -> None:
     except Exception:
         rate = 250.0
     msgs0 = build_messages(last_persona["text"])
-    n_tok = len(tokenizer.apply_chat_template(msgs0, tools=TOOLS if args.tools else None, tokenize=True))
+    n_tok = len(tokenizer.apply_chat_template(msgs0, tools=tpl_tools(), tokenize=True))
     emit("PROGRESS", f"0.50|Preparing your personality and memory|{n_tok / max(rate, 1):.0f}")
     prime(msgs0)
     dt_prime = time.time() - t_prime
@@ -459,6 +478,8 @@ def main() -> None:
         # "Think first": let a hybrid model reason before answering (hidden from speech).
         think = request.query.get("think") == "1" and can_think
         web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
+        # Smart (default): check only when it's needed; Always: every factual turn; Off.
+        fc_mode = (request.query.get("factcheck") or "smart") if web_on else "off"
         memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
         last_persona["text"] = persona
         recorder = SessionRecorder(vault, voice, persona, mode="Chat" if args.chat else "Aria", model_id=model_ids,
@@ -477,6 +498,7 @@ def main() -> None:
             "recalled": set(),        # session notes already pulled into this conversation
             "temp": min(1.2, max(0.0, float(request.query.get("temp") or args.temp))),  # personality's creativity
             "mute_voice": bool(args.chat),   # Chat: text only (Read aloud is separate)
+            "checked": [],                   # topics already checked online this session (Smart fact-check)
         }
         web = WebSession(net, vault, transcribe_audio=transcribe_file)
         recorder.web_log = web.log
@@ -652,6 +674,8 @@ def main() -> None:
                     else:
                         arg = clean.get("query") or clean.get("url") or ""
                         result = getattr(web, name)(arg)
+                        if name == "web_search" and result.get("ok"):
+                            st["checked"].append(topic_words(arg))   # follow-ups on this topic skip the check
                 except Exception as exc:
                     result = {"ok": False, "error": f"{name} failed: {exc}"}
             elif name == "watch_screen":
@@ -713,12 +737,21 @@ def main() -> None:
                 text_ = speech["stt"].generate(mx.array(core + dith[: core.shape[0]])).text.strip()
             return text_
 
-        def net_hint() -> str:
+        def net_hint(text_: str = "") -> str:
             if not args.tools:
                 return ""
             if not net.online:
                 return ("(Offline right now: web tools are unavailable. Answer from your own knowledge; for "
                         "factual claims, mention briefly that you couldn't verify online.)")
+            if fc_mode == "smart":
+                check, why = factcheck_decision(text_, st["checked"])
+                if check:
+                    trace("factcheck", f"Fact-check: checking ({why})")
+                    return ("(Fact-check needed here (" + why + "): call web_search first, then say briefly what the "
+                            "answer is based on. For the user's own files, screen, browser, calendar or Mac, use those tools instead.)")
+                trace("factcheck", f"Fact-check: skipped ({why})")
+                return ("(No web search needed for this turn: answer from your own knowledge. If you are genuinely unsure "
+                        "of a specific fact, say so in a few words. Use the user's own tools for their files, screen or Mac.)")
             if web_on:
                 return ("(Online: for factual claims about the world such as facts, figures, dates, people or "
                         "recent events, call web_search first, then say briefly what the answer is based on. "
@@ -794,7 +827,7 @@ def main() -> None:
         def with_recall(text_: str) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
             the user message, after the cached prefix, so the KV cache stays valid."""
-            hint = net_hint()
+            hint = net_hint(text_)
             sc = st.get("screen")
             if sc and not sc.get("excluded"):
                 hint = (f"(On screen now, from Live Screen: {sc['app']} - {sc['window']}. Visible text (OCR, may be partial): "
@@ -919,7 +952,7 @@ def main() -> None:
                 """Stream one assistant message; speak it sentence by sentence.
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
                 prompt = list(tokenizer.apply_chat_template(
-                    messages, tools=TOOLS if args.tools else None, add_generation_prompt=True, tokenize=True,
+                    messages, tools=tpl_tools(), add_generation_prompt=True, tokenize=True,
                     enable_thinking=think))
                 cached = st["cache_tokens"]
                 common = 0
