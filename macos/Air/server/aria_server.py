@@ -552,6 +552,7 @@ def main() -> None:
             frame = FRAME  # 20 ms at 24 kHz
             buf = np.zeros(0, np.float32)
             last_music_note = 0.0
+            last_miss_note = 0.0
             while not st["closed"]:
                 try:
                     item = mic_q.get(timeout=0.2)
@@ -574,6 +575,14 @@ def main() -> None:
                     det = detector["d"]
                     rejected = det.rejected
                     speech = det.is_speech(x)
+                    if det.missed is not None:
+                        # Something speech-like that never counted: log it so misses can be tuned.
+                        peak, thr, over_music = det.missed
+                        det.missed = None
+                        if time.monotonic() - last_miss_note > 8:
+                            last_miss_note = time.monotonic()
+                            trace("vad", f"Possible missed start: speech probability peaked at {peak:.2f} "
+                                         f"(needs {thr:.2f}){' with music playing' if over_music else ''}")
                     if (det.rejected > rejected and det.music_present and assistant_audible()
                             and time.monotonic() - last_music_note > 20):
                         # Loud sound that isn't you talking: say so once, quietly, and keep going.

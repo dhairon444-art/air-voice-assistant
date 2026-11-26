@@ -87,6 +87,11 @@ class TurnDetector:
         self.silero = Silero(_silero_path) if (_silero_path and self.mode == "music") else None
         self.p_hi, self.p_span, self.s_clear, self.s_dips = 0.75, 0.3, 0.0, 0.0
         self.prob = 0.0
+        # quiet rooms (no music detected): Silero's own threshold and a floor that follows the room
+        self.q_p, self.q_margin, self.q_floor = 0.5, 8.0, -60.0
+        self.near = 0                         # frames of likely speech that didn't pass (missed-start log)
+        self.near_peak = 0.0
+        self.missed: tuple | None = None      # (peak probability, threshold, over music) when a start was missed
 
     # -- the two things the turn loop asks --
     def onset_ms(self, aria_audible: bool) -> int:
@@ -95,13 +100,24 @@ class TurnDetector:
             return 200
         if self.mode == "headphones":
             return 160 if aria_audible else 140
+        if not self.music_present:
+            return int(300 - 100 * self.sensitivity) if aria_audible else 200   # 250 ms to interrupt in a quiet room
         if aria_audible:
-            return int(420 - 140 * self.sensitivity)     # 350 ms at the default sensitivity
-        return int(300 - 80 * self.sensitivity) if self.music_present else 200
+            return int(420 - 140 * self.sensitivity)     # 350 ms over music at the default sensitivity
+        return int(300 - 80 * self.sensitivity)
 
     @property
     def music_present(self) -> bool:
         return self.mode == "music" and self.music_frames > 100   # about 2 s of steady background sound
+
+    MUSIC_DB = -55.0   # non-speech sound this loud for ~2 s is music or TV, not room noise (~-60 to -70)
+
+    def _track_music(self, level: float) -> None:
+        if level > self.MUSIC_DB:
+            self.music_frames = min(self.music_frames + 1, 400)
+            self.rejected += 1
+        else:
+            self.music_frames = max(self.music_frames - 2, 0)
 
     def is_speech(self, x: np.ndarray) -> bool:
         hp = np.empty_like(x)
@@ -132,18 +148,29 @@ class TurnDetector:
         if self.silero is not None:
             # A trained speech model decides; the bed check keeps far-away voices (songs) out.
             self.prob = p = self.silero.feed(x)
-            dips = self.s_dips <= 0 or (len(self.env) >= 15 and
-                                        (max(self.env) - float(np.percentile(self.env, 20))) > self.s_dips)
-            speech = (p > self.p_hi - self.p_span * self.sensitivity and level > self.floor_db
-                      and vdb > bed + self.s_clear and dips)
+            music = self.music_present
+            if music:
+                # Music in the room: confident speech that stands clear of the music bed.
+                thr = self.p_hi - self.p_span * self.sensitivity
+                dips = self.s_dips <= 0 or (len(self.env) >= 15 and
+                                            (max(self.env) - float(np.percentile(self.env, 20))) > self.s_dips)
+                speech = p > thr and level > self.floor_db and vdb > bed + self.s_clear and dips
+            else:
+                # Quiet room: Silero's normal threshold, and a level floor that follows the room noise.
+                thr = self.q_p - 0.2 * (self.sensitivity - 0.5)
+                speech = p > thr and level > max(self.noise_db + self.q_margin, self.q_floor)
+            # Missed-start log: something speech-like for 300 ms+ that never passed.
+            if not speech and p > 0.25 and level > self.noise_db + 6:
+                self.near += 1
+                self.near_peak = max(self.near_peak, p)
+            else:
+                if self.near >= 15 and not speech:
+                    self.missed = (round(self.near_peak, 2), round(thr, 2), music)
+                if speech or self.near:
+                    self.near, self.near_peak = 0, 0.0
             if not speech:
                 self.bed.append(vdb)
-                if vdb > -55:
-                    self.music_frames = min(self.music_frames + 1, 400)
-                    if level > max(self.noise_db + self.margin_db, self.floor_db):
-                        self.rejected += 1
-                else:
-                    self.music_frames = max(self.music_frames - 2, 0)
+                self._track_music(level)
             return speech
         loud = level > max(self.noise_db + self.margin_db, self.floor_db) or (bed > -60 and level > self.floor_db)
         # Speech close to the mic stands well clear of the music bed in the voice band.
@@ -155,10 +182,5 @@ class TurnDetector:
         speech = loud and above_bed and voiced and dips
         if not speech:
             self.bed.append(vdb)
-            if vdb > -55:
-                self.music_frames = min(self.music_frames + 1, 400)
-                if loud:
-                    self.rejected += 1
-            else:
-                self.music_frames = max(self.music_frames - 2, 0)
+            self._track_music(level)
         return speech
