@@ -752,6 +752,9 @@ def main() -> None:
         QUIZ_ASK = re.compile(r"\b(quiz|test me|multiple choice)\b", re.I)
         SWITCH_ASK = re.compile(r"\b(switch|change|swap)\s+(to|into|personality|your personality)\b|\bbe (the|my) \w+ (now|instead)\b", re.I)
         BROWSER_ASK = re.compile(r"\b(my )?(browser|tabs?|safari|chrome|tabbit|arc)\b", re.I)
+        WATCH_ASK = re.compile(r"\b(watch|keep an eye on|monitor|follow) (my|the) screen\b|\blive screen\b", re.I)
+        CAL_ASK = re.compile(r"\b(my )?(calendar|schedule|agenda|meetings?|appointments?|reminders?)\b|"
+                             r"\bwhat (do|have) i (got|have)\b|\bam i (free|busy)\b", re.I)
         NEWS_ASK = re.compile(r"\b(news|this week|today'?s|latest|recent(ly)?|just happened|headlines?|current events)\b", re.I)
 
         def run_skill(skill: str, text_: str) -> dict:
@@ -799,6 +802,12 @@ def main() -> None:
             if args.tools and BROWSER_ASK.search(text_):
                 hint = ("(This is about the user's browser: call read_browser_tabs first, then read_page on a tab "
                         "if needed. It needs no Screen Recording.) " + hint).strip()
+            if args.tools and WATCH_ASK.search(text_):
+                hint = ("(The user wants Live Screen: call watch_screen with on true now. If they also asked about what "
+                        "is on screen, answer from the on_screen_now it returns.) " + hint).strip()
+            if args.tools and CAL_ASK.search(text_) and not re.search(r"\b(add|create|schedule|set|book|move|delete|remind me)\b", text_, re.I):
+                hint = ("(This asks about the user's calendar or reminders: call calendar_events (or list_reminders) "
+                        "first and answer only from what it returns.) " + hint).strip()
             if args.tools and SWITCH_ASK.search(text_):
                 hint = ("(The user wants a different personality: call switch_personality with the name they said.) "
                         + hint).strip()
