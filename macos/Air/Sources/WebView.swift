@@ -57,6 +57,13 @@ struct Source: Identifiable, Hashable {
     var host: String { url.host?.replacingOccurrences(of: "www.", with: "") ?? url.absoluteString }
 }
 
+struct PanelTake: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let emoji: String
+    let take: String
+}
+
 struct Turn: Identifiable, Equatable {
     enum Speaker { case you, aria }
     let id = UUID()
@@ -148,6 +155,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var musicNote: Date?
     private var autoSay: String?
     private var pendingLens: String?
+    /// Panel mode: each specialist's short take; collapsed to one line once Aria has answered.
+    @Published private(set) var panel: [PanelTake] = []
+    @Published var panelDone = false
+    private var panelTimer: DispatchWorkItem?
     private var stateBeforePause: TalkState = .listening
     private var loadedPort: Int?
     private var statusTimer: Timer?
@@ -419,6 +430,14 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
 
     private func handleEvent(_ e: [String: Any]) {
         switch e["t"] as? String {
+        case "panel":
+            if panelDone { panel = []; panelDone = false }
+            panel.append(PanelTake(id: (e["id"] as? String) ?? UUID().uuidString, name: (e["name"] as? String) ?? "",
+                                   emoji: (e["emoji"] as? String) ?? "", take: (e["take"] as? String) ?? ""))
+            panelTimer?.cancel()
+            let w = DispatchWorkItem { [weak self] in self?.panelDone = true }
+            panelTimer = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: w)
         case "lens":
             let label = [(e["emoji"] as? String) ?? "", (e["name"] as? String) ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
             if (e["ask"] as? Bool) != true { pendingLens = label }
@@ -541,6 +560,19 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             turns = [Turn(speaker: .you, text: "Compare these three phones in a table."), a1,
                      Turn(speaker: .you, text: "Draw the steps of applying for a visa as a flowchart."), a2,
                      Turn(speaker: .you, text: "Give me the sources as links."), a3]
+        case "panel":
+            state = .speaking; outLevel = 0.12
+            var a1 = Turn(speaker: .aria, text: "The panel mostly agrees: keep your job for now and test the roastery on weekends. The founder would move faster than the others; the finance advisor wants six months of savings first. My take: run a two-month weekend pilot, then decide.")
+            a1.lens = "🧑‍⚖️ Panel"
+            turns = [Turn(speaker: .you, text: "Get a panel on this: should I quit my job to start a coffee roastery?"), a1]
+            panel = [PanelTake(id: "founder", name: "Startup Advisor", emoji: "🚀", take: "Test demand with weekend markets first; quit once you have paying regulars."),
+                     PanelTake(id: "pfadvisor", name: "Personal Finance Advisor", emoji: "💰", take: "Have six months of expenses saved before you give up a salary."),
+                     PanelTake(id: "careercoach", name: "Career Coach", emoji: "🧭", take: "Negotiate a four-day week so you keep income while you build it.")]
+        case "lens":
+            state = .listening
+            var a1 = Turn(speaker: .aria, text: "Pay the card first. At around 20% interest, clearing it is a guaranteed 20% return; investing rarely beats that. Then build a small emergency fund before you invest.")
+            a1.lens = "💰 Personal Finance Advisor"
+            turns = [Turn(speaker: .you, text: "Should I pay off my credit card or invest the $5,000?"), a1]
         case "paused":
             live = true; paused = true; state = .paused; turns = [you1, aria1]
         case "muted":

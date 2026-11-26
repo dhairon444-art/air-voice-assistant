@@ -585,6 +585,10 @@ def main() -> None:
         fc_mode = (request.query.get("factcheck") or "smart") if web_on else "off"
         # Orchestrator: auto (default) / ask / off. Off as well when a specialist was picked directly.
         orch_mode = request.query.get("orch") or "auto"
+        try:
+            panel_size = max(2, min(3, int(request.query.get("panel") or 3)))
+        except ValueError:
+            panel_size = 3
         if router is None or personality in {p_["name"] for p_ in specialists.values()}:
             orch_mode = "off"
         allowed = [x for x in (request.query.get("specialists") or "").split(",") if x in specialists]
@@ -940,6 +944,43 @@ def main() -> None:
             return {"ok": True, "summary": f"Ran {match['name']}", "output": out[:2500],
                     "note": "Tell the user the gist in a few spoken sentences; offer to save it with save_as."}
 
+        PANEL_ASK = re.compile(r"\b(get|give me|convene|call) (a|the|me a) panel\b|\bpanel (on|of|for) (this|that|it)\b|"
+                               r"\b(a few|several|different|multiple) (expert )?(views|opinions|perspectives)\b", re.I)
+
+        def run_panel(text_: str, announce=None) -> str:
+            """Panel: 2-3 specialists each give a short take (sequential, side generations); Aria synthesises."""
+            if router is None or not PANEL_ASK.search(text_):
+                return ""
+            topic = PANEL_ASK.sub("", text_).strip(" ,.?:") or text_
+            router.route(topic)
+            ids = [i_ for i_ in getattr(router, "last_order", []) if i_ in specialists][:panel_size]
+            if len(ids) < 2:
+                return ""
+            if announce:
+                announce("Let me get a few views on that.")
+            # The question this panel is about: the request itself, or the previous user turn for "a panel on this".
+            subject = topic if len(topic.split()) > 3 else next(
+                (m_["content"].split("\n\n(")[0] for m_ in reversed(messages) if m_["role"] == "user"), topic)
+            takes = []
+            for i_ in ids:
+                if st["closed"]:
+                    break
+                p_ = specialists[i_]
+                t0_ = time.monotonic()
+                take = side_llm([{"role": "system", "content": f"You are a {p_['name']} ({p_['role']}). Expertise: {p_['expertise']}. "
+                                  f"Methods: {', '.join(p_.get('frameworks') or [])}. Give your honest take in at most two short "
+                                  "spoken sentences, from your expertise only. No lists, no preamble."},
+                                 {"role": "user", "content": subject[:800]}], 60).strip()
+                takes.append((p_, take))
+                event(t="panel", id=p_["id"], name=p_["name"], emoji=p_.get("emoji", ""), take=take)
+                trace("panel", f"{p_['name']} ({time.monotonic() - t0_:.1f}s): {take}")
+            if not takes:
+                return ""
+            lines = "\n".join(f"- {p_['name']}: {t_}" for p_, t_ in takes)
+            return (f"(Panel takes on this question:\n{lines}\nGive the combined answer in your own voice: what they agree on, "
+                    "where they disagree and why, and your recommendation. At most five spoken sentences; name each "
+                    "expert briefly. Don't repeat their takes word for word.)")
+
         def route_lens(text_: str) -> str:
             """Lens mode: one generation, answered through the best-fitting specialist's expertise."""
             if orch_mode == "off" or not text_.strip():
@@ -972,11 +1013,12 @@ def main() -> None:
                     f"Never: {'; '.join((p_.get('donts') or [])[:2])}. Stay Aria with the same rules; don't mention the lens."
                     + (f" When it matters, say: {p_['disclaimer']}" if p_.get("disclaimer") else "") + ")")
 
-        def with_recall(text_: str) -> str:
+        def with_recall(text_: str, announce=None) -> str:
             """Attach older conversations that match this turn (BM25) and the network state. Added to
             the user message, after the cached prefix, so the KV cache stays valid."""
             hint = net_hint(text_)
-            lens = route_lens(text_)
+            lens = run_panel(text_, announce) if orch_mode != "off" else ""
+            lens = lens or route_lens(text_)
             if lens:
                 hint = (lens + "\n" + hint).strip()
             sc = st.get("screen")
@@ -1334,9 +1376,9 @@ def main() -> None:
                                                       "result": "Not run. Nothing was changed."}))
                         if verdict == "unclear":
                             # They moved on to something else: handle it as a new request.
-                            messages.append({"role": "user", "content": with_recall(text) + extra_ctx})
+                            messages.append({"role": "user", "content": with_recall(text, speak) + extra_ctx})
                 else:
-                    messages.append({"role": "user", "content": with_recall(text) + extra_ctx})
+                    messages.append({"role": "user", "content": with_recall(text, speak) + extra_ctx})
 
                 t_llm = time.monotonic()
                 said_parts: list[str] = []

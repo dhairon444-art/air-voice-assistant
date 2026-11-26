@@ -22,6 +22,7 @@ struct TalkView: View {
             let overlay = geo.size.width - width < 440
             HStack(spacing: 0) {
                 TalkColumn()
+                    .overlay(alignment: .topTrailing) { PanelCards().padding(.top, 56).padding(.trailing, 16) }
                 if prefs.showThinking && !overlay {
                     ResizeHandle(width: $width, total: geo.size.width)
                     ThinkingSidebar().frame(width: width)
@@ -39,6 +40,46 @@ struct TalkView: View {
             }
         }
         .animation(.snappy(duration: 0.25), value: prefs.showThinking)
+    }
+}
+
+/// Panel mode: one compact card per specialist in the corner (icon, name, one-line take); tap to
+/// expand. They collapse to a single line once Aria has answered.
+struct PanelCards: View {
+    @EnvironmentObject var web: WebController
+    @State private var open: Set<String> = []
+    var body: some View {
+        if !web.panel.isEmpty {
+            VStack(alignment: .trailing, spacing: 6) {
+                if web.panelDone {
+                    Button { web.panelDone = false } label: {
+                        Label("Panel: " + web.panel.map(\.name).joined(separator: ", "), systemImage: "person.3")
+                            .font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                } else {
+                    ForEach(web.panel) { take in
+                        let isOpen = open.contains(take.id)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(take.emoji) \(take.name)").font(.caption.weight(.semibold))
+                            Text(take.take).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(isOpen ? nil : 1)
+                        }
+                        .frame(width: 240, alignment: .leading)
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .onTapGesture { if isOpen { open.remove(take.id) } else { open.insert(take.id) } }
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityHint("Tap to show the whole take")
+                    }
+                }
+            }
+            .animation(.snappy(duration: 0.25), value: web.panel.count)
+            .animation(.snappy(duration: 0.25), value: web.panelDone)
+        }
     }
 }
 

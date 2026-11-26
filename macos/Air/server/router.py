@@ -97,6 +97,7 @@ class Router:
         order = np.argsort(-sims)
         best, second = int(order[0]), int(order[1]) if len(order) > 1 else int(order[0])
         top = [(self.names[i], round(float(sims[i]), 3)) for i in order[:3]]
+        self.last_order = [self.ids[i] for i in order[:5]]
         res = {"id": self.ids[best], "name": self.names[best], "score": float(sims[best]),
                "second": float(sims[second]), "aria": round(aria, 3), "top": top}
         if sims[best] < lo or sims[best] < aria + 0.02:
