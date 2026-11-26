@@ -362,6 +362,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if let t = autoSay, !t.isEmpty {
                 autoSay = ""
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.say(t) }
+                if UserDefaults.standard.bool(forKey: "AirAutoPause") {   // test hook: pause mid-reply, then resume
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.setPaused(true) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 17) { [weak self] in self?.setPaused(false) }
+                }
             }
         case "paused":
             if !paused { stateBeforePause = state }

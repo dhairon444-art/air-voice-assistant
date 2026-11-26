@@ -651,8 +651,18 @@ def main() -> None:
                     on = str(clean.get("on", True)).lower() not in ("false", "0", "no")
                     st["watch_for"] = str(clean.get("watch_for") or "").strip() if on else ""
                     if on:
-                        result["note"] = ("Say briefly: 'Watching your screen.'" +
-                                          (f" You'll be told when '{st['watch_for']}' seems true." if st["watch_for"] else ""))
+                        # The first look arrives within a few seconds: wait for it, so a question about
+                        # what's on screen now gets answered now (a static page never 'changes').
+                        t_end = time.monotonic() + 4.0
+                        while time.monotonic() < t_end and not ((st.get("screen") or {}).get("text")):
+                            time.sleep(0.2)
+                        sc_ = st.get("screen") or {}
+                        if sc_.get("text") and not sc_.get("excluded"):
+                            result["on_screen_now"] = f"{sc_.get('app')} - {sc_.get('window')}:\n{sc_['text'][:1500]}"
+                        result["note"] = ("Say briefly that you're watching their screen. If the user asked about what "
+                                          "is on screen, answer it now from on_screen_now."
+                                          + (f" If '{st['watch_for']}' is not visible yet, you'll be told when it seems true."
+                                             if st["watch_for"] else ""))
             elif name == "switch_personality":
                 result = call_app_tool(name, clean, timeout=10)
                 if result.get("ok") and result.get("persona"):
