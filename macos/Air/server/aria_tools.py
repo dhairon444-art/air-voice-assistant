@@ -829,3 +829,38 @@ def wants_heavy(request: str) -> tuple[bool, bool]:
     if _HEAVY_NAMED.search(t):
         return True, True
     return bool(_HEAVY.search(t) or len(t.split()) > 70), False
+
+
+# ---------------- speech speed by voice ----------------
+_WORDNUM = {"half": 0.5, "one": 1.0, "normal": 1.0, "two": 2.0, "double": 2.0, "one and a half": 1.5, "one point five": 1.5,
+            "one point two five": 1.25, "one point two": 1.2, "one point seven five": 1.75, "zero point seven five": 0.75,
+            "three quarters": 0.75}
+
+
+def parse_speed(text: str, current: float) -> float | None:
+    """A request to change how fast Aria speaks, as a new speed (0.5-2.0), else None."""
+    t = (text or "").lower().strip(" .!?")
+    if len(t.split()) > 12:
+        return None
+    if re.search(r"\b(normal|regular|default|usual) (speed|pace)\b|\bspeed (back )?to normal\b", t):
+        return 1.0
+    if re.search(r"\btwice as fast\b|\bdouble speed\b", t):
+        return 2.0
+    if re.search(r"\bhalf speed\b|\bhalf as fast\b", t):
+        return 0.5
+    m = re.search(r"\b(speed|pace|speak at|talk at|rate)\b(?: to| at)?\s*([0-2](?:\.\d{1,2})?)\s*(x|times)?\b", t) \
+        or re.search(r"\b([0-2](?:\.\d{1,2})?)\s*(x|times)\s*(speed)?\b", t)
+    if m:
+        val = m.group(2) if m.re.pattern.startswith("\\b(speed") else m.group(1)
+        try:
+            return max(0.5, min(2.0, round(float(val), 2)))
+        except ValueError:
+            return None
+    m = re.search(r"\bspeed (?:to )?(" + "|".join(sorted(_WORDNUM, key=len, reverse=True)) + r")\b", t)
+    if m:
+        return _WORDNUM[m.group(1)]
+    if re.search(r"\b(speak|talk|go|read)\b.{0,12}\b(faster|quicker|more quickly)\b|^(please |aria,? )?speed (it )?up\b", t):
+        return min(2.0, round(current + 0.25, 2))
+    if re.search(r"\b(speak|talk|go|read)\b.{0,12}\b(slower|more slowly)\b|^(please |aria,? )?slow (it )?down\b", t):
+        return max(0.5, round(current - 0.25, 2))
+    return None

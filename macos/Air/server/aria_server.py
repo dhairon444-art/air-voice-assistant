@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (wants_heavy, route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (parse_speed, wants_heavy, route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -356,6 +356,12 @@ def main() -> None:
     TOOL_START = getattr(tokenizer, "tool_call_start", None) or "<tool_call>"
 
     memory = Memory(vault)
+    # Speech speed (0.5-2x), set by voice ("speak faster", "speed 1.5"); remembered between launches.
+    speed_file = Path.home() / "Library/Application Support/Air/speech.json"
+    try:
+        speed_box = {"v": max(0.5, min(2.0, float(json.loads(speed_file.read_text()).get("speed", 1.0))))}
+    except Exception:
+        speed_box = {"v": 1.0}
     net = Connectivity()
     vision = None  # created after the GPU worker exists
 
@@ -820,12 +826,18 @@ def main() -> None:
     async def handle_chat(request: web.Request):
         ws = web.WebSocketResponse(max_msg_size=0)
         await ws.prepare(request)
-        if lock.locked():
+        try:
+            # The previous conversation may still be closing (saving its note): wait for it briefly
+            # instead of refusing, so a quick "new topic" or reconnect doesn't fail.
+            await asyncio.wait_for(lock.acquire(), 15)
+        except asyncio.TimeoutError:
             await ws.send_bytes(b"\x03" + b"Another conversation is already running.")
             await ws.close()
             return ws
-        async with lock:
+        try:
             await run_session(request, ws)
+        finally:
+            lock.release()
         return ws
 
     async def run_session(request, ws):
@@ -1400,7 +1412,7 @@ def main() -> None:
                     spoken.append(chunk)
                     return not cancelled()
                 v_ = FRENCH_VOICE if lang["code"] == "fr" and is_french(chunk) else voice
-                for res in tts.generate(chunk, voice=v_, lang_code=v_[0]):
+                for res in tts.generate(chunk, voice=v_, lang_code=v_[0], speed=speed_box["v"]):
                     if st.get("mute_voice"):
                         break  # muted mid-sentence: stop the audio, keep the caption
                     if cancelled():
@@ -1702,6 +1714,24 @@ def main() -> None:
                     event(t="new_topic")
                     set_state("listening")
                     return
+                if (new_speed := parse_speed(text, speed_box["v"])) is not None:
+                    recorder.add_text(text, "You", new_line=True)
+                    speed_box["v"] = new_speed
+                    try:
+                        speed_file.parent.mkdir(parents=True, exist_ok=True)
+                        speed_file.write_text(json.dumps({"speed": new_speed}))
+                    except OSError:
+                        pass
+                    event(t="speed", value=new_speed)
+                    trace("voice", f"Speech speed {new_speed:g}x")
+                    msg_ = "Back to normal speed." if new_speed == 1.0 else f"Okay, {new_speed:g} times speed."
+                    if not args.chat:
+                        speak(msg_)
+                    else:
+                        send_text(msg_)
+                    recorder.add_text(msg_, "Aria", new_line=True)
+                    set_state("listening")
+                    return
                 extra_ctx = ""
                 if image:
                     # An attached image (Chat): the vision model describes it for this turn; the file stays local.
@@ -1749,6 +1779,7 @@ def main() -> None:
                 pending = st.pop("pending", None) if asked != "done" else None
                 confirmed_ok = False
                 cloud_go = local_go = False
+                last_result: dict = {}
                 if (pc_ := st.pop("pending_cloud", None)) is not None and pending is None:
                     v_ = classify_reply(text)
                     event(t="confirm_done", answer=v_)
@@ -1764,6 +1795,7 @@ def main() -> None:
                     if verdict == "yes":
                         result = run_tool(pending["name"], pending["args"], f'confirmed ("{text}")')
                         confirmed_ok = bool(result.get("ok"))
+                        last_result["r"] = result
                         messages.append(tool_message({"user_said": text, "confirmed": True, "result": result}))
                     else:
                         recorder.tool_log.append({"time": time.strftime("%H:%M:%S"), "tool": pending["name"],
@@ -1879,6 +1911,15 @@ def main() -> None:
                     if calls:
                         if not live and reply_text and not guard.get("plan"):
                             say(reply_text)
+                    elif (used_tool or confirmed_ok) and not reply_text.strip() and len(spoken) == before and last_result.get("r"):
+                        # Some brains (Gemma E4B) end with nothing after a tool: say what it did, briefly.
+                        r_ = last_result["r"]
+                        line_ = (str(r_.get("summary") or "").strip() or "Done.") if r_.get("ok") else \
+                            ("That didn't work: " + str(r_.get("error") or "something went wrong").strip())
+                        line_ = line_ if line_.endswith((".", "!", "?")) else line_ + "."
+                        say(line_)
+                        messages.append({"role": "assistant", "content": line_})
+                        break
                     else:
                         if guard["source"] and not src_nudged:
                             src_nudged = True
@@ -1979,6 +2020,7 @@ def main() -> None:
                         marks["hold"] = len(spoken)  # the answer proper starts after this
                     marks.setdefault("r1_end", time.monotonic())
                     result = run_tool(name, targs, "not needed (read-only or navigation)")
+                    last_result["r"] = result
                     marks.setdefault("tool_end", time.monotonic())
                     if name in ACTION_TOOLS and result.get("ok"):
                         acted = True
@@ -2390,7 +2432,8 @@ def main() -> None:
             import io
             import wave as wavemod
             try:
-                parts = [np.array(r.audio).reshape(-1) for r in ensure_tts().generate(clean_for_speech(text), voice=voice_, lang_code=voice_[0])]
+                parts = [np.array(r.audio).reshape(-1) for r in ensure_tts().generate(clean_for_speech(text), voice=voice_, lang_code=voice_[0],
+                                                                                  speed=speed_box["v"])]
                 pcm = (np.clip(np.concatenate(parts) if parts else np.zeros(1), -1, 1) * 32767).astype("<i2")
                 buf = io.BytesIO()
                 with wavemod.open(buf, "wb") as w:

@@ -231,7 +231,7 @@ extension AriaModels {
             if id == talker { return "That's already the talker; the thinker should be a stronger model." }
             if residentGB(talker: talker, thinker: id) > budgetGB - headroomGB { return "With \(m.name) as thinker the map would be over the memory budget." }
         case .heavy:
-            break
+            return "The heavy brain is a cloud model (Claude or Gemini). Add a key under Cloud keys, then drag it here."
         }
         return nil
     }

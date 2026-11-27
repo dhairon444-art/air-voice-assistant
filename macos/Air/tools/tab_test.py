@@ -108,10 +108,11 @@ class Engine:
         orch = getattr(self.a, "orch", "off")
         url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
         async with aiohttp.ClientSession() as s, s.ws_connect(url, max_msg_size=0) as ws_:
-            while True:
-                msg = await asyncio.wait_for(ws_.receive(), 120)
-                if msg.type == aiohttp.WSMsgType.BINARY and msg.data[:1] == b"\x00":
-                    break
+            refused = await self._wait_ready(ws_)
+            if refused:
+                return {"request": text, "seconds": 0, "said": "", "tools": [], "app_tools": [], "opened": [],
+                        "confirm": False, "doit": False, "nudged": False, "words_before_acting": 0, "toolcall_log": [],
+                        "route": "", "first_audio": None, "latency": "", "refused": refused}
             r = await self._turn_on(ws_, text, timeout)
             await ws_.close()
         await asyncio.sleep(0.3)
@@ -123,10 +124,21 @@ class Engine:
         url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
         self._http = aiohttp.ClientSession()
         ws = await self._http.ws_connect(url, max_msg_size=0)
+        refused = await self._wait_ready(ws)
+        if refused:
+            raise RuntimeError(f"session refused: {refused}")
+        return ws
+
+    async def _wait_ready(self, ws) -> str:
+        """Wait for the engine's ready byte; returns why the session was refused, or ''."""
         while True:
             msg = await asyncio.wait_for(ws.receive(), 120)
+            if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                return "closed before ready"
+            if msg.type == aiohttp.WSMsgType.BINARY and msg.data[:1] == b"\x03":
+                return msg.data[1:].decode("utf-8", "replace")
             if msg.type == aiohttp.WSMsgType.BINARY and msg.data[:1] == b"\x00":
-                return ws
+                return ""
 
     async def _turn_on(self, ws, text: str, timeout: float) -> dict:
         self.opened.clear(), self.toolcalls.clear(), self.app_tools.clear(), self.lines.clear()

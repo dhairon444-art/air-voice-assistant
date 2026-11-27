@@ -18,7 +18,7 @@ enum ModelRole: String, CaseIterable, Identifiable {
         switch self {
         case .talker: return "The voice you hear: conversation and simple actions, fast."
         case .thinker: return "Deep answers, research and multi-step plans. It works behind the talker and speaks in the same voice."
-        case .heavy: return "Loaded only for deep tasks, and Aria asks before loading it."
+        case .heavy: return "Claude or Gemini in the cloud, used only for big tasks and only after Aria asks."
         }
     }
     var key: String { "airModel." + rawValue }
@@ -46,12 +46,6 @@ enum AriaModels {
                   roles: [.thinker, .talker], note: "Reliable tools; can reason first"),
         AriaModel(id: "mlx-community/Qwen3.5-9B-4bit", name: "Qwen3.5 9B", diskGB: 5.5, ramGB: 5.3,
                   roles: [.thinker], note: "Stronger answers; also sees images"),
-        AriaModel(id: "mlx-community/Qwen3-14B-4bit", name: "Qwen3 14B", diskGB: 8.3, ramGB: 9.4,
-                  roles: [.heavy], note: "On demand; slow next to speech"),
-        AriaModel(id: "mlx-community/Qwen3-30B-A3B-3bit", name: "Qwen3 30B-A3B (3-bit)", diskGB: 13.4, ramGB: 14.5,
-                  roles: [.heavy], note: "MoE; on demand only"),
-        AriaModel(id: "mlx-community/gemma-4-26B-A4B-it-heretic-4bit", name: "Gemma 4 26B Heretic", diskGB: 15, ramGB: 16.5,
-                  roles: [.heavy], note: "Big; on demand only"),
     ]
     static let defaults: [ModelRole: String] = [
         .talker: "mlx-community/gemma-4-e4b-it-4bit",
@@ -88,8 +82,8 @@ enum AriaModels {
         Preset(id: "balanced", name: "Balanced", talker: "mlx-community/gemma-4-e4b-it-4bit",
                thinker: "mlx-community/Qwen3-8B-4bit", heavy: "", note: "Gemma 4 E4B + Qwen3 8B"),
         Preset(id: "best", name: "Best", talker: "mlx-community/gemma-4-e4b-it-4bit",
-               thinker: "mlx-community/Qwen3.5-9B-4bit", heavy: "mlx-community/gemma-4-26B-A4B-it-heretic-4bit",
-               note: "Gemma 4 E4B + Qwen3.5 9B, Gemma 26B on demand"),
+               thinker: "mlx-community/Qwen3.5-9B-4bit", heavy: "",
+               note: "Gemma 4 E4B + Qwen3.5 9B; add Claude or Gemini as the heavy brain"),
     ]
 
     /// The short label on the Talk screen's brain chip: "E4B + 8B".

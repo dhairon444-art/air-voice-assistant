@@ -16,7 +16,6 @@ struct ChatModel: Identifiable, Hashable {
         ChatModel(id: "mlx-community/Qwen3-14B-4bit", name: "Qwen3 14B", sizeGB: 8.4, note: "Stronger reasoning, slower"),
         ChatModel(id: "mlx-community/Qwen3-30B-A3B-3bit", name: "Qwen3 30B-A3B (3-bit)", sizeGB: 13.4, note: "Big mixture-of-experts, fast for its size"),
         ChatModel(id: "mlx-community/Qwen3-30B-A3B-4bit", name: "Qwen3 30B-A3B (4-bit)", sizeGB: 17.2, note: "Best quality here; heavy"),
-        ChatModel(id: "mlx-community/gemma-4-26B-A4B-it-heretic-4bit", name: "Gemma 4 26B Heretic", sizeGB: 15.5, note: "Uncensored Gemma 4; heavy"),
     ]
 
     /// Downloaded? Resolve the snapshot's weight files (the hub stores them as symlinks into blobs).
