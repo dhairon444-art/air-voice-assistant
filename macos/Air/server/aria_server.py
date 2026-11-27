@@ -464,6 +464,9 @@ def main() -> None:
             t_ = time.time()
             from mlx_lm.models.cache import load_prompt_cache
             cache_ = load_prompt_cache(str(best[0].with_suffix(".safetensors")))
+            # Materialise now, on this thread: lazily loaded arrays stay bound to the loading thread's
+            # stream, and the GPU thread then fails with "There is no Stream(cpu, 1) in current thread".
+            mx.eval([a_ for c_ in cache_ for a_ in (c_.state if isinstance(c_.state, (list, tuple)) else [c_.state])])
             shared["cache"], shared["tokens"] = cache_, best[1][: cache_[0].offset]
             best[0].touch()
             emit("STATUS", f"Prompt cache loaded from disk ({best_n} of {len(sys_tokens)} tokens) in {time.time() - t_:.1f}s")
