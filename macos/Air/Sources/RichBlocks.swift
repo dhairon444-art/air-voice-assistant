@@ -28,21 +28,89 @@ struct DisplayBlockView: View {
 
 struct MarkdownTextView: View {
     let markdown: String
+
+    /// Line-level Markdown: headings, nested bullet and numbered lists, quotes and callouts
+    /// ("> **Note:** …"), rules, fenced code and pipe tables; inline bold, italics, code and links.
+    private enum Piece: Identifiable {
+        case heading(Int, String), bullet(Int, String, String), quote(String), rule, para(String)
+        case table(String), code(String)
+        var id: String {
+            switch self {
+            case .heading(let l, let t): return "h\(l)\(t)"
+            case .bullet(let d, let m, let t): return "b\(d)\(m)\(t)"
+            case .quote(let t): return "q\(t)"
+            case .rule: return "r\(UUID())"
+            case .para(let t): return "p\(t)"
+            case .table(let t): return "t\(t)"
+            case .code(let t): return "c\(t)"
+            }
+        }
+    }
+
+    private var pieces: [Piece] {
+        var out: [Piece] = []
+        var lines = markdown.components(separatedBy: "\n")[...]
+        while let raw = lines.first {
+            lines = lines.dropFirst()
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            let indent = raw.prefix { $0 == " " || $0 == "\t" }.count / 2
+            if t.hasPrefix("```") {
+                var body: [String] = []
+                while let l = lines.first, !l.trimmingCharacters(in: .whitespaces).hasPrefix("```") { body.append(l); lines = lines.dropFirst() }
+                lines = lines.dropFirst()
+                out.append(.code(body.joined(separator: "\n")))
+            } else if t.hasPrefix("|") {
+                var rows = [t]
+                while let l = lines.first, l.trimmingCharacters(in: .whitespaces).hasPrefix("|") { rows.append(l.trimmingCharacters(in: .whitespaces)); lines = lines.dropFirst() }
+                out.append(.table(rows.joined(separator: "\n")))
+            } else if t.hasPrefix("#") {
+                let level = t.prefix { $0 == "#" }.count
+                out.append(.heading(level, t.trimmingCharacters(in: CharacterSet(charactersIn: "# "))))
+            } else if t.hasPrefix("- ") || t.hasPrefix("* ") || t.hasPrefix("• ") {
+                out.append(.bullet(indent, "•", String(t.dropFirst(2))))
+            } else if let r = t.range(of: #"^\d+[.)] "#, options: .regularExpression) {
+                out.append(.bullet(indent, String(t[r]).trimmingCharacters(in: .whitespaces), String(t[r.upperBound...])))
+            } else if t.hasPrefix(">") {
+                out.append(.quote(t.trimmingCharacters(in: CharacterSet(charactersIn: "> "))))
+            } else if t == "---" || t == "***" {
+                out.append(.rule)
+            } else if !t.isEmpty {
+                out.append(.para(t))
+            }
+        }
+        return out
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(markdown.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t.hasPrefix("#") {
-                    Text(inline(t.trimmingCharacters(in: CharacterSet(charactersIn: "# ")))).font(.headline)
-                } else if t.hasPrefix("- ") || t.hasPrefix("* ") || t.range(of: #"^\d+\. "#, options: .regularExpression) != nil {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(pieces.enumerated()), id: \.offset) { _, p in
+                switch p {
+                case .heading(let l, let t):
+                    Text(inline(t)).font(l <= 1 ? .title3.weight(.semibold) : (l == 2 ? .headline : .subheadline.weight(.semibold)))
+                        .padding(.top, 4)
+                case .bullet(let depth, let mark, let t):
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(t.hasPrefix("- ") || t.hasPrefix("* ") ? "•" : String(t.prefix { $0 != " " }))
-                            .foregroundStyle(.secondary)
-                        Text(inline(t.hasPrefix("- ") || t.hasPrefix("* ") ? String(t.dropFirst(2))
-                                    : String(t.drop { $0 != " " }.dropFirst())))
+                        Text(mark).foregroundStyle(.secondary).monospacedDigit()
+                        Text(inline(t)).fixedSize(horizontal: false, vertical: true)
                     }
-                } else if !t.isEmpty {
-                    Text(inline(t))
+                    .padding(.leading, CGFloat(depth) * 16)
+                case .quote(let t):
+                    let kind = ["note", "tip", "warning", "key takeaway", "important"].first { t.lowercased().hasPrefix("**\($0)") || t.lowercased().hasPrefix($0) }
+                    HStack(alignment: .top, spacing: 8) {
+                        RoundedRectangle(cornerRadius: 1.5).fill(kind == "warning" ? Color.orange : Color.accentColor).frame(width: 3)
+                        Text(inline(t)).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                    .background((kind == "warning" ? Color.orange : Color.accentColor).opacity(kind == nil ? 0.05 : 0.10),
+                                in: RoundedRectangle(cornerRadius: 8))
+                case .rule:
+                    Divider().padding(.vertical, 4)
+                case .para(let t):
+                    Text(inline(t)).fixedSize(horizontal: false, vertical: true)
+                case .table(let t):
+                    MarkdownTableView(markdown: t)
+                case .code(let c):
+                    CodeBlockView(code: c)
                 }
             }
         }

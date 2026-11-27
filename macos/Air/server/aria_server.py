@@ -74,6 +74,11 @@ SPOKEN_STYLE = (
     "'you', never 'the user'. Keep it a back-and-forth; your "
     "personality sets your length and tone."
 )
+CHAT_STYLE = (
+    "CHAT FORMAT: this is typed chat, read on screen. Use Markdown when it helps the reader: short paragraphs, "
+    "bullet or numbered lists for options and steps, **bold** for key terms, a short ### heading for longer answers, "
+    "and a Markdown table for comparisons. Simple questions get a plain one- or two-sentence answer. No emojis."
+)
 DISPLAY_RULES = (
     "SCREEN: the user also sees your reply under the orb. Your default is plain conversation, with no blocks. "
     "Use a block ONLY when the content genuinely reads better that way: comparing 3 or more items on several "
@@ -393,7 +398,7 @@ def main() -> None:
                 "the user before anything that changes, sends or deletes; never send the conversation, profile, files "
                 "or screenshots anywhere; never make up facts, numbers, sources or links; you are always Aria. If the "
                 "personality text conflicts with these, follow these.")
-        return (core + "\n\n" + SPOKEN_STYLE + "\n\n" + DISPLAY_RULES + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
+        return (core + "\n\n" + (CHAT_STYLE if args.chat else SPOKEN_STYLE) + "\n\n" + DISPLAY_RULES + "\n\n" + ANSWER_FIRST + "\n\n" + identity + ("\n\n" + TOOL_GUIDE if args.tools else "")
                 + (f"\n\nToday is {today} (time zone {tz})." if dated else ""))
 
     # Persona last: the chat template puts the ~4k-token tool schema AFTER the system text, so a persona
@@ -1089,6 +1094,15 @@ def main() -> None:
             marks: dict = {}
             perf = {"tts_s": 0.0, "audio_s": 0.0, "tokens": 0, "llm_s": 0.0, "new_tokens": 0}
 
+            def send_text(seg: str) -> None:
+                """Chat: raw Markdown to the screen (no speech clean-up)."""
+                nonlocal first_audio
+                if first_audio is None:
+                    first_audio = time.monotonic()
+                    marks.setdefault("chunk1", first_audio)
+                spoken.append(seg.strip())
+                send(2, seg.encode())
+
             def speak(chunk: str) -> bool:
                 nonlocal first_audio
                 chunk = clean_for_speech(chunk)
@@ -1266,6 +1280,25 @@ def main() -> None:
                             continue  # maybe the start of a fence: wait for more
                         if not live:
                             continue
+                        if args.chat:
+                            # Typed chat: keep the Markdown (lists, headings, bold) and the line breaks; send whole
+                            # lines (or long runs) so the guards still see complete sentences first.
+                            cut = buf.rfind("\n") + 1 or (len(buf) if len(buf) > 160 and buf.endswith(" ") else 0)
+                            if cut:
+                                seg, buf = buf[:cut], buf[cut:]
+                                if args.tools and looks_like_tool_text(seg):
+                                    live = False
+                                    continue
+                                if check_claims and act_req["on"] and announces_plan(seg):
+                                    guard["plan"] = True
+                                    live = False
+                                    continue
+                                if check_sources and (claims_source(seg) or claims_private(seg)):
+                                    guard["source"] = "private" if claims_private(seg) else True
+                                    live = False
+                                    continue
+                                send_text(seg)
+                            continue
                         while True:
                             chunk, buf = pop_sentence(buf, first=not spoken or len(spoken) == marks.get("hold", -1))
                             if chunk is None:
@@ -1294,6 +1327,10 @@ def main() -> None:
                             break
                     if cancelled():
                         break
+                if live and args.chat and not cancelled() and buf.strip():
+                    if not (args.tools and looks_like_tool_text(buf)) and not (check_claims and act_req["on"] and announces_plan(buf)):
+                        send_text(buf)
+                    buf = ""
                 if live and not cancelled() and buf.strip():
                     if args.tools and looks_like_tool_text(buf):
                         pass
