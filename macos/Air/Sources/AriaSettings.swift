@@ -17,13 +17,20 @@ enum Brain: String, CaseIterable, Identifiable {
 
 /// The five best Kokoro voices, by Kokoro's own quality grades (VOICES.md).
 enum Voices {
-    static let all: [(id: String, name: String, note: String)] = [
+    static let builtIn: [(id: String, name: String, note: String)] = [
         ("af_heart", "Heart", "warmest, highest-rated"),
         ("af_bella", "Bella", "bright, American"),
         ("af_nicole", "Nicole", "soft, made for headphones"),
         ("bf_emma", "Emma", "British"),
         ("af_sarah", "Sarah", "clear, American"),
     ]
+    /// The five built-in voices plus any added from the Marketplace's Voices section.
+    static var all: [(id: String, name: String, note: String)] {
+        builtIn + VoiceCatalog.added.compactMap { id in
+            guard !builtIn.contains(where: { $0.id == id }), let v = VoiceCatalog.voice(id) else { return nil }
+            return (v.id, v.name, v.note)
+        }
+    }
     static let defaultVoice = "af_heart"
     /// Display name for a voice id, including voices from older sessions.
     static func name(_ id: String) -> String {

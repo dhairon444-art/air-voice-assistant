@@ -183,6 +183,9 @@ struct AssistantView: View {
                         .padding(.horizontal, 24).padding(.top, 14)
                 }
                 CaptionsView().padding(.horizontal, 20).padding(.top, 10)
+                if web.live && web.mode == "assistant" {
+                    TypeBox().padding(.horizontal, 20).padding(.bottom, 10)
+                }
             }
             .animation(.snappy, value: web.filePlan)
             SummaryPill(now: web.mode == "assistant" ? web.filed.count : 0, pending: store.pending.count,

@@ -9,7 +9,7 @@ struct MarketplaceView: View {
     @EnvironmentObject var prefs: Prefs
     @Environment(\.airTheme) private var theme
 
-    enum Section: Hashable { case all, installed, favourites, builtIn, category(String) }
+    enum Section: Hashable { case all, installed, favourites, builtIn, voices, category(String) }
     enum Sort: String, CaseIterable, Identifiable { case popular = "Popular", new = "New", az = "A–Z", recent = "Recently used"; var id: String { rawValue } }
 
     @State private var section: Section = .all
@@ -47,6 +47,7 @@ struct MarketplaceView: View {
             market.custom.filter { !market.installed.contains($0.id) }
         case .favourites: items = market.all.filter { market.favourites.contains($0.id) }
         case .builtIn: items = builtIns
+        case .voices: items = []
         case .category(let c): items = c == "Mine" ? market.custom : market.all.filter { $0.category == c }
         }
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
@@ -82,6 +83,9 @@ struct MarketplaceView: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                      if section == .voices {
+                        VoicesMarket()
+                      } else {
                         if section == .all && query.isEmpty && !filtersActive {
                             let pinned = market.all.filter { market.favourites.contains($0.id) }
                             if !pinned.isEmpty { row(title: "Pinned", items: pinned) }
@@ -100,6 +104,7 @@ struct MarketplaceView: View {
                                     .onTapGesture { detail = it }
                             }
                         }
+                      }
                     }
                     .padding(16)
                 }
@@ -133,6 +138,7 @@ struct MarketplaceView: View {
             Label("Installed", systemImage: "checkmark.circle").tag(Section.installed)
             Label("Favourites", systemImage: "star").tag(Section.favourites)
             Label("Built-in", systemImage: "seal").tag(Section.builtIn)
+            Label("Voices", systemImage: "waveform").tag(Section.voices)
             SwiftUI.Section("Categories") {
                 ForEach(Self.categories, id: \.self) { c in
                     HStack {

@@ -1,0 +1,614 @@
+{
+ "engine": "Kokoro-82M",
+ "source": "Kokoro VOICES.md (hexgrad/Kokoro-82M, Apache-2.0)",
+ "voices": [
+  {
+   "id": "af_heart",
+   "name": "Heart",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "A",
+   "style": [
+    "warm"
+   ],
+   "needs_pack": false
+  },
+  {
+   "id": "af_alloy",
+   "name": "Alloy",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_aoede",
+   "name": "Aoede",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_bella",
+   "name": "Bella",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "A",
+   "style": [
+    "popular"
+   ],
+   "needs_pack": false
+  },
+  {
+   "id": "af_jessica",
+   "name": "Jessica",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_kore",
+   "name": "Kore",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_nicole",
+   "name": "Nicole",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [
+    "headphones"
+   ],
+   "needs_pack": false
+  },
+  {
+   "id": "af_nova",
+   "name": "Nova",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_river",
+   "name": "River",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_sarah",
+   "name": "Sarah",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "af_sky",
+   "name": "Sky",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "female",
+   "grade": "B",
+   "style": [
+    "little training data"
+   ],
+   "needs_pack": false
+  },
+  {
+   "id": "am_adam",
+   "name": "Adam",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "D",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_echo",
+   "name": "Echo",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_eric",
+   "name": "Eric",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_fenrir",
+   "name": "Fenrir",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_liam",
+   "name": "Liam",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_michael",
+   "name": "Michael",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_onyx",
+   "name": "Onyx",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_puck",
+   "name": "Puck",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "am_santa",
+   "name": "Santa",
+   "language": "American English",
+   "code": "en-US",
+   "accent": "American",
+   "gender": "male",
+   "grade": "C",
+   "style": [
+    "little training data"
+   ],
+   "needs_pack": false
+  },
+  {
+   "id": "bf_alice",
+   "name": "Alice",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bf_emma",
+   "name": "Emma",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bf_isabella",
+   "name": "Isabella",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bf_lily",
+   "name": "Lily",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bm_daniel",
+   "name": "Daniel",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bm_fable",
+   "name": "Fable",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bm_george",
+   "name": "George",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "bm_lewis",
+   "name": "Lewis",
+   "language": "British English",
+   "code": "en-GB",
+   "accent": "British",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "jf_alpha",
+   "name": "Alpha",
+   "language": "Japanese",
+   "code": "ja",
+   "accent": "Japanese",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "jf_gongitsune",
+   "name": "Gongitsune",
+   "language": "Japanese",
+   "code": "ja",
+   "accent": "Japanese",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "jf_nezumi",
+   "name": "Nezumi",
+   "language": "Japanese",
+   "code": "ja",
+   "accent": "Japanese",
+   "gender": "female",
+   "grade": "B",
+   "style": [
+    "little training data"
+   ],
+   "needs_pack": true
+  },
+  {
+   "id": "jf_tebukuro",
+   "name": "Tebukuro",
+   "language": "Japanese",
+   "code": "ja",
+   "accent": "Japanese",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "jm_kumo",
+   "name": "Kumo",
+   "language": "Japanese",
+   "code": "ja",
+   "accent": "Japanese",
+   "gender": "male",
+   "grade": "B",
+   "style": [
+    "little training data"
+   ],
+   "needs_pack": true
+  },
+  {
+   "id": "zf_xiaobei",
+   "name": "Xiaobei",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zf_xiaoni",
+   "name": "Xiaoni",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zf_xiaoxiao",
+   "name": "Xiaoxiao",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zf_xiaoyi",
+   "name": "Xiaoyi",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "female",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zm_yunjian",
+   "name": "Yunjian",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zm_yunxi",
+   "name": "Yunxi",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zm_yunxia",
+   "name": "Yunxia",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "zm_yunyang",
+   "name": "Yunyang",
+   "language": "Mandarin Chinese",
+   "code": "zh",
+   "accent": "Mandarin",
+   "gender": "male",
+   "grade": "C",
+   "style": [],
+   "needs_pack": true
+  },
+  {
+   "id": "ef_dora",
+   "name": "Dora",
+   "language": "Spanish",
+   "code": "es",
+   "accent": "Spanish",
+   "gender": "female",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "em_alex",
+   "name": "Alex",
+   "language": "Spanish",
+   "code": "es",
+   "accent": "Spanish",
+   "gender": "male",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "em_santa",
+   "name": "Santa",
+   "language": "Spanish",
+   "code": "es",
+   "accent": "Spanish",
+   "gender": "male",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "ff_siwis",
+   "name": "Siwis",
+   "language": "French",
+   "code": "fr",
+   "accent": "French",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "hf_alpha",
+   "name": "Alpha",
+   "language": "Hindi",
+   "code": "hi",
+   "accent": "Hindi",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "hf_beta",
+   "name": "Beta",
+   "language": "Hindi",
+   "code": "hi",
+   "accent": "Hindi",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "hm_omega",
+   "name": "Omega",
+   "language": "Hindi",
+   "code": "hi",
+   "accent": "Hindi",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "hm_psi",
+   "name": "Psi",
+   "language": "Hindi",
+   "code": "hi",
+   "accent": "Hindi",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "if_sara",
+   "name": "Sara",
+   "language": "Italian",
+   "code": "it",
+   "accent": "Italian",
+   "gender": "female",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "im_nicola",
+   "name": "Nicola",
+   "language": "Italian",
+   "code": "it",
+   "accent": "Italian",
+   "gender": "male",
+   "grade": "B",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "pf_dora",
+   "name": "Dora",
+   "language": "Brazilian Portuguese",
+   "code": "pt-BR",
+   "accent": "Brazilian",
+   "gender": "female",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "pm_alex",
+   "name": "Alex",
+   "language": "Brazilian Portuguese",
+   "code": "pt-BR",
+   "accent": "Brazilian",
+   "gender": "male",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  },
+  {
+   "id": "pm_santa",
+   "name": "Santa",
+   "language": "Brazilian Portuguese",
+   "code": "pt-BR",
+   "accent": "Brazilian",
+   "gender": "male",
+   "grade": "",
+   "style": [],
+   "needs_pack": false
+  }
+ ]
+}

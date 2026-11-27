@@ -107,6 +107,24 @@ ANSWER_FIRST = (
 )
 # The five best Kokoro voices by Kokoro's own quality grades (VOICES.md): A, A-, B-, B-, C+.
 VOICES = ["af_heart", "af_bella", "af_nicole", "bf_emma", "af_sarah"]
+
+
+def _catalog_voices() -> set[str]:
+    """Every Kokoro voice in voices.json that can speak here (Japanese and Mandarin need extra packages)."""
+    for p_ in (Path(__file__).resolve().parent.parent / "voices.json",
+               Path(__file__).resolve().parent.parent / "Resources" / "voices.json"):
+        try:
+            return {v["id"] for v in json.loads(p_.read_text())["voices"] if not v.get("needs_pack")}
+        except Exception:
+            continue
+    return set()
+
+
+ALL_VOICES = set(VOICES) | _catalog_voices()
+
+
+def voice_ok(v: str) -> bool:
+    return v in ALL_VOICES
 PREVIEW_TEXT = "Hi, I'm Aria. This is how I sound when we talk. Ask me anything, and I'll tell you straight."
 
 MIC_RATE = 24000
@@ -851,7 +869,7 @@ def main() -> None:
     async def run_session(request, ws):
         loop = asyncio.get_running_loop()
         voice = request.query.get("voice") or args.voice
-        if voice not in VOICES:
+        if not voice_ok(voice):
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
         assistant_mode = request.query.get("mode") == "assistant"
@@ -2440,7 +2458,7 @@ def main() -> None:
         import wave as wavemod
 
         v = request.query.get("voice", "")
-        if v not in VOICES:
+        if not voice_ok(v):
             return web.Response(status=404)
         if v not in previews:
             loop = asyncio.get_running_loop()
@@ -2542,7 +2560,7 @@ def main() -> None:
         """Read aloud (Chat): synthesise text with the chosen voice, returned as WAV."""
         text = (request.query.get("text") or "")[:4000]
         voice_ = request.query.get("voice") or args.voice
-        if voice_ not in VOICES:
+        if not voice_ok(voice_):
             voice_ = args.voice
         if not text.strip():
             return web.Response(status=400)
