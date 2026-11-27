@@ -155,6 +155,13 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     @Published private(set) var musicNote: Date?
     private var autoSay: String?
     private var pendingLens: String?
+    /// "Do it": Aria described an action twice without doing it; one tap asks her to act now.
+    @Published var doItText: String?
+    func doIt() {
+        guard let t = doItText else { return }
+        doItText = nil
+        say(t + " (Do it now: call the tool, don't describe it.)")
+    }
     /// Panel mode: each specialist's short take; collapsed to one line once Aria has answered.
     @Published private(set) var panel: [PanelTake] = []
     @Published var panelDone = false
@@ -441,6 +448,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "lens":
             let label = [(e["emoji"] as? String) ?? "", (e["name"] as? String) ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
             if (e["ask"] as? Bool) != true { pendingLens = label }
+        case "doit":
+            doItText = e["text"] as? String
         case "music":
             let now = Date()
             musicNote = now

@@ -825,6 +825,7 @@ struct CaptionsView: View {
 
 struct TurnView: View {
     @Environment(\.airTheme) private var theme
+    @EnvironmentObject var web: WebController
     let turn: Turn
     var body: some View {
         if turn.speaker == .you {
@@ -860,6 +861,11 @@ struct TurnView: View {
                     .accessibilityLabel("Aria said: \(turn.text)")
                 }
                 ForEach(turn.blocks) { DisplayBlockView(block: $0).padding(.leading, 24) }
+                if web.doItText != nil, turn.id == web.turns.last?.id {
+                    Button { web.doIt() } label: { Label("Do it", systemImage: "bolt.fill") }
+                        .buttonStyle(.borderedProminent).controlSize(.small).padding(.leading, 24)
+                        .help("Ask Aria to do it now")
+                }
                 if !turn.sources.isEmpty { SourcesRow(sources: turn.sources).padding(.leading, 24) }
                 ForEach(turn.files, id: \.self) { FileRow(url: $0).padding(.leading, 24) }
             }

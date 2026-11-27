@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -1133,6 +1133,7 @@ def main() -> None:
                 return True
 
             guard = {"hit": False}
+            act_req = {"on": False}
             think_text: list[str] = []
             disp = {"on": False, "text": ""}
             shown: list[tuple[str, str]] = []
@@ -1272,6 +1273,11 @@ def main() -> None:
                             if args.tools and looks_like_tool_text(chunk):
                                 live = False  # a tool call written as text: parse it, never speak it
                                 break
+                            if check_claims and act_req["on"] and announces_plan(chunk):
+                                # "I'll open ..." with no tool call yet: don't voice the plan; act instead.
+                                guard["plan"] = True
+                                live = False
+                                break
                             if check_claims and claims_action(chunk):
                                 # Would claim an action that no tool performed: stop speaking here.
                                 guard["hit"] = True
@@ -1399,6 +1405,8 @@ def main() -> None:
                 used_tool = False
                 nudged = False
                 src_nudged = False
+                plan_nudged = False
+                act_req["on"] = bool(args.tools and ACT_ASK.search(text or ""))
                 acted = confirmed_ok
 
                 def say(text_: str) -> None:
@@ -1425,6 +1433,7 @@ def main() -> None:
                     # spoken so a claim like "I've closed it" can't be voiced without a tool call.
                     guard["hit"] = False
                     guard["source"] = False
+                    guard["plan"] = False
                     before = len(spoken)
                     if queued:
                         reply_text, calls = "", [queued.pop(0)]
@@ -1440,7 +1449,7 @@ def main() -> None:
                     if cancelled():
                         break
                     if calls:
-                        if not live and reply_text:
+                        if not live and reply_text and not guard.get("plan"):
                             say(reply_text)
                     else:
                         if guard["source"] and not src_nudged:
@@ -1450,6 +1459,19 @@ def main() -> None:
                             messages.append({"role": "assistant", "content": reply_text})
                             messages.append({"role": "user", "content": PRIVATE_NUDGE if private else SOURCE_NUDGE})
                             continue
+                        if act_req["on"] and not used_tool and (guard.get("plan") or announces_plan(reply_text)):
+                            if not plan_nudged:
+                                plan_nudged = True
+                                emit("TOOLCALL", f"nudge: announced instead of acting: {reply_text[:120]!r}")
+                                trace("act", "Described the action instead of doing it: asked to act now")
+                                messages.append({"role": "assistant", "content": reply_text})
+                                messages.append({"role": "user", "content": ACT_NUDGE})
+                                continue
+                            # Still no tool: offer a one-click retry instead of a promise.
+                            event(t="doit", text=text)
+                            trace("act", "Still no tool call: showing a 'Do it' button")
+                            say("I didn't manage to do that. Tap Do it to try again.")
+                            break
                         # A claim is only suspicious if no action tool actually ran in this turn.
                         suspicious = args.tools and not acted and (
                             guard["hit"] or claims_action(reply_text) or (used_tool and announces_action(reply_text)))

@@ -180,6 +180,13 @@ ON_HOLD = {
 }
 
 TOOL_GUIDE = (
+    "ACT FIRST. When the request is clear and a tool can do it, call the tool at once in this same reply, with no "
+    "preamble and no plan; after the result, say ONE short line (for example 'Opened 3 tabs: LinkedIn, Seek, Indeed.' or "
+    "'Added the reminder.'). Never say what you are going to do instead of doing it. Examples: User: open YouTube and "
+    "Gmail -> call open_url with both links, then 'Opened YouTube and Gmail.' User: remind me to call Sam at 5 -> call "
+    "add_reminder. User: what's on my screen -> call watch_screen or look_at_screen. Only for complex or ambiguous work "
+    "(several steps, research or a plan whose scope, budget, place, time or criteria aren't given, more than 10 tabs, "
+    "exports) first call ask_choice ONCE to confirm what they want, then act straight after the answer. "
     "WHAT YOU CAN DO. With your tools you can: open, switch and quit apps; read and change the "
     "calendar and reminders; search, read and open the user's files and documents (find_files, then "
     "read_file or open_file); see the tabs open in their browser and read any page (read_browser_tabs, "
@@ -380,6 +387,25 @@ ACTION_TOOLS = NEEDS_CONFIRMATION | {"switch_personality", "open_app", "switch_t
 _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment|one moment|give me a (moment|second)|"
                      r"right away|done|has been|have been|i've (closed|quit|moved|deleted|cancel+ed|added|set|muted|sent|created|marked))\b",
                      re.I)
+
+
+# A request to DO something on the Mac or the web (act at once; no narration first).
+ACT_ASK = re.compile(r"^\W*(please |can you |could you |would you |aria,? )*(open|close|quit|launch|search|look up|google|find|"
+                     r"read|summari[sz]e|remind|add|create|schedule|move|delete|cancel|save|export|download|play|pause|"
+                     r"skip|mute|unmute|set|turn|switch|show|watch|email|message|text|send|run|check)\b", re.I)
+# Plans or announcements instead of acting ("I'll open...", "Here's what I'll do").
+_ANNOUNCE = re.compile(r"\b(i'?ll|i will|i'?m going to|let me|i can|i'?d|here'?s (what|how) i'?ll|first,? i'?ll|"
+                       r"i would|i'?m about to|allow me to)\s+(\w+\s+){0,3}?(open|search|look|find|read|check|create|add|"
+                       r"set|save|export|pull|fetch|launch|start|run|send|remind|summari[sz]e|go|navigate|visit|browse)\b", re.I)
+
+
+def announces_plan(text: str) -> bool:
+    """The reply describes an action it is about to take (and so should have called a tool)."""
+    return bool(_ANNOUNCE.search(text or ""))
+
+
+ACT_NUDGE = ("(System note for the assistant, not from the user: you described what you would do but didn't call a "
+             "tool. Call the right tool NOW, with no preamble; after the result, say one short line about what happened.)")
 
 
 _TOOL_RE = None
