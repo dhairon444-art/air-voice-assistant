@@ -815,3 +815,17 @@ def route_brain(request: str, action: bool) -> tuple[str, str]:
     if len(t.split()) > 40:
         return "thinker", "a long request"
     return "talker", "conversation"
+
+
+_HEAVY_NAMED = re.compile(r"\b(use|ask|with|via|try) (claude|gemini|the cloud|the cloud model|the heavy brain|the big brain)\b", re.I)
+_HEAVY = re.compile(r"\b(deep research|in[- ]depth (report|analysis|review)|very (complex|detailed|thorough)|comprehensive|"
+                    r"write (me )?(a|an) (long|detailed|full|thorough) (report|essay|plan|analysis|proposal|brief)|"
+                    r"business plan|full (plan|report|analysis)|research (report|paper))\b", re.I)
+
+
+def wants_heavy(request: str) -> tuple[bool, bool]:
+    """(looks like a job for the heavy brain, the user named it). Named means they already agreed."""
+    t = request or ""
+    if _HEAVY_NAMED.search(t):
+        return True, True
+    return bool(_HEAVY.search(t) or len(t.split()) > 70), False

@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (wants_heavy, route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -232,7 +232,9 @@ def main() -> None:
     p.add_argument("--temp", type=float, default=0.7)
     p.add_argument("--thinker", default="", help="Talker + Thinker: a stronger brain for turns that need reasoning")
     p.add_argument("--thinker-draft", default="", help="draft model for the thinker (speculative decoding)")
-    p.add_argument("--heavy", default="", help="a big brain loaded only for deep tasks, unloaded after")
+    p.add_argument("--heavy", default="", help="heavy brain for deep tasks: cloud:anthropic:<model> or cloud:google:<model> "
+                   "(the key comes from AIR_CLOUD_KEY_ANTHROPIC / AIR_CLOUD_KEY_GOOGLE); Aria asks before each use")
+    p.add_argument("--cloud-context", action="store_true", help="the owner allowed sending the profile and recalled notes")
     p.add_argument("--route", default="auto", choices=["auto", "talker", "thinker"],
                    help="which brain answers when a thinker is loaded (auto: by the request)")
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
@@ -563,12 +565,25 @@ def main() -> None:
     ui_dir = Path(args.ui_dir)
     # One thread owns all GPU (MLX) work; VAD runs on the CPU stream next to it.
     gpu_jobs: queue.Queue = queue.Queue()
+    idle_jobs: list = []   # generators stepped only while no job waits (GPU thread)
 
     def gpu_worker_main():
         # MLX streams are per thread: this thread gets its own GPU stream.
         with mx.stream(mx.new_stream(mx.gpu)):
             while True:
-                fn = gpu_jobs.get()
+                try:
+                    fn = gpu_jobs.get(timeout=0.05 if idle_jobs else None)
+                except queue.Empty:
+                    # Nothing waiting: one small step of background work (e.g. priming the thinker),
+                    # so a turn that arrives meanwhile waits at most one step.
+                    try:
+                        next(idle_jobs[0][1])
+                    except StopIteration:
+                        idle_jobs.pop(0)
+                    except Exception as exc:
+                        idle_jobs.pop(0)
+                        emit("ERROR", f"background job failed: {exc!r}")
+                    continue
                 try:
                     fn()
                 except Exception as exc:  # keep the worker alive
@@ -631,9 +646,10 @@ def main() -> None:
             trim_prompt_cache(b["cache"], len(b["tokens"]) - common)
             b["tokens"] = b["tokens"][:common]
             return common
-        snap_ = b.get("snap")
-        if snap_ is not None and common >= len(snap_[0]) and b["tokens"][:len(snap_[0])] == snap_[0]:
-            # Back to the saved system-prompt state; only the conversation is processed again.
+        ok_ = [x_ for x_ in b.get("snaps", []) if common >= len(x_[0]) and b["tokens"][:len(x_[0])] == x_[0]]
+        if ok_:
+            # Back to the longest saved state that still matches; only what follows is processed again.
+            snap_ = max(ok_, key=lambda x_: len(x_[0]))
             b["cache"], b["tokens"] = cache_restore(snap_[1]), list(snap_[0])
             return len(snap_[0])
         b["cache"] = make_prompt_cache(b["lm"]) + (make_prompt_cache(b["draft"]) if b["draft"] is not None else [])
@@ -648,9 +664,14 @@ def main() -> None:
         n_sys = 0
         while n_sys < len(msgs) and msgs[n_sys]["role"] == "system":
             n_sys += 1
-        if n_sys == 0 or (n_sys == 1 and b["inline"] == inline_tools):
+        if n_sys == 0 or (n_sys == 1 and b["inline"] == inline_tools and args.chat):
             return msgs, tools_
         sys_ = "\n\n".join(m_["content"] for m_ in msgs[:n_sys])
+        if not args.chat:
+            # The thinker answers out loud: give the substance in a few spoken sentences (cached with the system).
+            sys_ += ("\n\nTHINKER, SPOKEN: you are answering out loud for a harder question. Give the useful substance in "
+                     "at most five short spoken sentences unless the user asked for detail; put any long comparison in a table "
+                     "block on screen instead of reading it out.")
         if inline_tools and sys_.startswith(inline_tools):
             sys_ = sys_[len(inline_tools):].lstrip("\n")
         if b["inline"]:
@@ -674,35 +695,118 @@ def main() -> None:
                     break
             return list(tok_.encode(head, add_special_tokens=False))
 
-    def prime_brain(b: dict, msgs: list) -> None:
-        """Process the system prompt into this brain's cache (GPU thread)."""
+    def prime_brain_steps(b: dict, msgs: list, chunk: int = 256):
+        """Process the system prompt into this brain's cache, one chunk per step (a generator, stepped
+        on the GPU thread while it's idle). Brains whose cache can't be trimmed (Qwen3.5) keep snapshots
+        at the persona boundary and at the end, so a personality switch re-processes only the persona."""
         n_sys = next((i_ for i_, m_ in enumerate(msgs) if m_["role"] != "system"), len(msgs))
         bm, bt = brain_messages(b, msgs[:n_sys])
         t_ = time.time()
         sys_tokens = system_tokens(b["tok"], bm, bt)
-        common = _common(b["tokens"], sys_tokens)
+        content_ = bm[0]["content"] if bm and bm[0]["role"] == "system" else ""
+        cut_ = content_.find("Your personality and role")
+        split_ = 0
+        if cut_ > 0:
+            pre_ = system_tokens(b["tok"], [{"role": "system", "content": content_[:cut_]}], bt)
+            split_ = max(0, _common(pre_, sys_tokens) - 4)
         key_ = "think-" + re.sub(r"[^A-Za-z0-9]+", "_", b["id"].split("/")[-1])
+        b["sys_tokens"], b["split"] = sys_tokens, split_   # where a turn snapshots the system part (see generate)
+        common = _common(b["tokens"], sys_tokens)
         if common < len(sys_tokens) - 256 and pc_load(sys_tokens, common, box=b, key=key_):
+            b["snaps"] = []
             common = _common(b["tokens"], sys_tokens)
+        common = brain_reset_to(b, common)
         todo_ = len(sys_tokens) - common
-        brain_reset_to(b, common)
-        if common < len(sys_tokens):
-            for _ in stream_generate(b["lm"], b["tok"], sys_tokens[common:], max_tokens=1, draft_model=b["draft"],
+        from mlx_lm.models.cache import can_trim_prompt_cache
+        trimmable = can_trim_prompt_cache(b["cache"])
+        while True:
+            common = _common(b["tokens"], sys_tokens)
+            if common >= len(sys_tokens):
+                break
+            if len(b["tokens"]) > common:      # a thinker turn ran meanwhile with another prompt
+                common = brain_reset_to(b, common)
+            end_ = min(len(sys_tokens), common + chunk)
+            if common < split_ < end_:
+                end_ = split_
+            for _ in stream_generate(b["lm"], b["tok"], sys_tokens[common:end_], max_tokens=1, draft_model=b["draft"],
                                      prompt_cache=b["cache"]):
                 pass
-        b["tokens"] = sys_tokens[:cache_offset(b["cache"]) or len(sys_tokens)]
-        from mlx_lm.models.cache import can_trim_prompt_cache
-        if not can_trim_prompt_cache(b["cache"]):
-            b["snap"] = (list(b["tokens"]), cache_snapshot(b["cache"]))   # can't trim: keep a copy to go back to
+            b["tokens"] = sys_tokens[:end_]
+            if not trimmable and end_ in (split_, len(sys_tokens)):
+                snaps_ = [x_ for x_ in b.get("snaps", []) if b["tokens"][:len(x_[0])] == x_[0] and len(x_[0]) < end_]
+                b["snaps"] = (snaps_ + [(list(b["tokens"]), cache_snapshot(b["cache"]))])[-2:]
+            yield
+        if not trimmable and b["tokens"] == sys_tokens and not any(x_[0] == sys_tokens for x_ in b.get("snaps", [])):
+            b["snaps"] = (b.get("snaps", []) + [(list(b["tokens"]), cache_snapshot(b["cache"]))])[-2:]
         if todo_ > 512:
             pc_save(box=b, key=key_, model=b["id"])
         emit("STATUS", f"{model_name(b['id'])} primed ({len(b['tokens'])} tokens, {todo_} new) in {time.time() - t_:.1f}s")
 
+    def prime_brain_later(b: dict, msgs: list) -> None:
+        """Queue a background prime of this brain (the latest one replaces any not yet finished)."""
+        idle_jobs[:] = [j_ for j_ in idle_jobs if j_[0] is not b]
+        idle_jobs.append((b, prime_brain_steps(b, [dict(m_) for m_ in msgs if m_["role"] == "system"])))
+
     brains: dict = {"thinker": None, "heavy": None}
+    from cloud import CloudBrain, display_name, parse_ref, plain_history
+    heavy_cloud = parse_ref(args.heavy)
+    cloud_key = os.environ.pop(f"AIR_CLOUD_KEY_{heavy_cloud[0].upper()}", "") if heavy_cloud else ""
+    if heavy_cloud and not cloud_key:
+        emit("STATUS", f"heavy brain {args.heavy}: no key, so it stays off")
+        heavy_cloud = None
+    cloud_name = display_name(heavy_cloud[0]) if heavy_cloud else ""
+    if heavy_cloud:
+        emit("STATUS", f"heavy brain: {cloud_name} {heavy_cloud[1]} (cloud; asks before each use)")
+
+    def cloud_answer(messages: list, say, send_text, speak, cancelled, persona_: str, trace) -> bool:
+        """Answer this turn with the cloud heavy brain. False: not possible (offline, error); answer locally."""
+        if not net.online:
+            say("I'm offline, so I'll answer here on the Mac.")
+            return False
+        system_ = (base_prompt().replace("\n\n" + TOOL_GUIDE, "")
+                   + f"\n\nFor this answer you are running on {cloud_name} ({heavy_cloud[1]}) in the cloud; the user agreed. "
+                     "You can't use tools here; answer from what you know and say when something may be out of date."
+                   + ("\n\n" + memory.system_block() if args.cloud_context else "")
+                   + "\n\nYour personality and role:\n" + persona_)
+        hist = plain_history(messages, args.cloud_context)
+        cb = CloudBrain(heavy_cloud[0], heavy_cloud[1], cloud_key)
+        event(t="cloud", name=cloud_name, model=heavy_cloud[1])
+        event(t="brain", who="heavy", why=f"{cloud_name} (cloud)")
+        trace("cloud", f"Asking {cloud_name} ({heavy_cloud[1]}); sent {len(hist)} turns"
+                       + (" with your profile" if args.cloud_context else ", no profile or notes"))
+        full_, buf_ = "", ""
+        try:
+            for piece in cb.stream(system_, hist):
+                if cancelled():
+                    break
+                full_ += piece
+                buf_ += piece
+                if args.chat:
+                    cut = buf_.rfind("\n") + 1
+                    if cut:
+                        send_text(buf_[:cut])
+                        buf_ = buf_[cut:]
+                    continue
+                while True:
+                    chunk, buf_ = pop_sentence(buf_, first=False)
+                    if chunk is None or not speak(chunk):
+                        break
+        except Exception as exc:
+            emit("ERROR", f"cloud answer failed: {type(exc).__name__}")   # never the key or the request
+            if not full_:
+                say(f"I couldn't reach {cloud_name}, so I'll answer here on the Mac.")
+                return False
+        if buf_.strip() and not cancelled():
+            (send_text if args.chat else speak)(buf_)
+        messages.append({"role": "assistant", "content": full_.strip() or "..."})
+        note_ = cb.cost_note()
+        emit("CLOUD", note_)
+        trace("cloud", note_)
+        return True
     if args.thinker:
         try:
             brains["thinker"] = load_brain(args.thinker, args.thinker_draft)
-            gpu_jobs.put(lambda: brains["thinker"] and prime_brain(brains["thinker"], build_messages(last_persona["text"])))
+            prime_brain_later(brains["thinker"], build_messages(last_persona["text"]))
         except Exception as exc:
             emit("ERROR", f"thinker not loaded: {exc}")
     vision = Vision(emit, gpu_jobs)
@@ -1374,6 +1478,33 @@ def main() -> None:
                     else:
                         common = brain_reset_to(B, common)
                         cache_ = B["cache"]
+                if B is not None and B.get("sys_tokens"):
+                    from mlx_lm.models.cache import can_trim_prompt_cache
+                    sys_ = B["sys_tokens"]
+                    end_sys = _common(prompt, sys_)    # the system part as this prompt renders it
+                    if not can_trim_prompt_cache(cache_) and common < end_sys and end_sys >= len(sys_) - 8:
+                        sys_ = prompt[:end_sys]
+                        # Can't trim this cache: process the system part on its own and keep a snapshot
+                        # there (and at the persona boundary), so later turns only redo the conversation.
+                        for stop_ in [x_ for x_ in (min(B.get("split", 0), end_sys), end_sys) if x_ > common]:
+                            for _ in stream_generate(lm_, tok_, prompt[common:stop_], max_tokens=1, draft_model=draft_,
+                                                     prompt_cache=cache_):
+                                pass
+                            common = stop_
+                            B["tokens"] = prompt[:common]
+                            B["snaps"] = ([x_ for x_ in B.get("snaps", []) if len(x_[0]) < common
+                                           and B["tokens"][:len(x_[0])] == x_[0]] + [(list(B["tokens"]), cache_snapshot(cache_))])[-2:]
+                    if not can_trim_prompt_cache(cache_) and len(prompt) - common > 64:
+                        # Also keep the state at the end of this prompt: the next turn (or the next tool
+                        # round) shares it exactly, so only the new messages are processed then.
+                        for _ in stream_generate(lm_, tok_, prompt[common:-1], max_tokens=1, draft_model=draft_,
+                                                 prompt_cache=cache_):
+                            pass
+                        common = len(prompt) - 1
+                        B["tokens"] = prompt[:common]
+                        keep_ = [x_ for x_ in B.get("snaps", []) if B["tokens"][:len(x_[0])] == x_[0]]
+                        base_ = [x_ for x_ in keep_ if len(x_[0]) <= len(sys_)][-2:]   # system and persona states
+                        B["snaps"] = base_ + [(list(B["tokens"]), cache_snapshot(cache_))]
                 feed = prompt[common:]
                 perf["new_tokens"] += len(feed)
                 sampler = make_sampler(temp=st.get("temp", args.temp), top_p=0.9)
@@ -1617,7 +1748,17 @@ def main() -> None:
                         asked = "done"
                 pending = st.pop("pending", None) if asked != "done" else None
                 confirmed_ok = False
-                if pending is not None:
+                cloud_go = local_go = False
+                if (pc_ := st.pop("pending_cloud", None)) is not None and pending is None:
+                    v_ = classify_reply(text)
+                    event(t="confirm_done", answer=v_)
+                    if v_ in ("yes", "no"):
+                        cloud_go, local_go = v_ == "yes", v_ == "no"
+                        messages.append({"role": "user", "content": f"{text} ({'use ' + pc_ if cloud_go else 'answer here on the Mac'})"})
+                        trace("cloud", f"{pc_}: {'yes' if cloud_go else 'no, answered locally'}")
+                if cloud_go or local_go:
+                    pass
+                elif pending is not None:
                     verdict = classify_reply(text)
                     event(t="confirm_done", answer=verdict)
                     if verdict == "yes":
@@ -1662,6 +1803,15 @@ def main() -> None:
                         st["use"] = brains["thinker"]
                         trace("brain", f"Thinker ({model_name(brains['thinker']['id'])}): {why_}")
                         event(t="brain", who="thinker", why=why_)
+                ask_cloud = ""
+                if heavy_cloud is not None and not internal:
+                    hv_, named_ = wants_heavy(text) if not (cloud_go or local_go) else (False, False)
+                    if cloud_go or (hv_ and named_):
+                        st["use"] = "cloud"
+                    elif local_go:
+                        st["use"] = brains["thinker"]
+                    elif hv_ and not act_req["on"]:
+                        ask_cloud = cloud_name
 
                 def say(text_: str) -> None:
                     before_ = len(spoken)
@@ -1679,17 +1829,32 @@ def main() -> None:
 
                 if (switched := st.pop("announce", None)):
                     say(f"Switched to {switched}.")
-                if st["use"] is not None and not args.chat and not act_req["on"]:
+                if st["use"] is not None and not args.chat and not act_req["on"] and not ask_cloud:
                     # The talker keeps the conversation going while the thinker works.
                     say(("Let me dig into that.", "Good question; give me a moment.", "Let me think that through.")[len(st["latencies"]) % 3])
                     marks["filler"] = True
                     marks["hold"] = len(spoken)
+                rounds = 8
+                if ask_cloud:
+                    # Local by default: ask before anything goes to the cloud.
+                    q_ = (f"This looks like a big one. Should I use {ask_cloud} for it? Only your question and this "
+                          f"conversation go to {'Anthropic' if ask_cloud == 'Claude' else 'Google'}.")
+                    st["pending_cloud"] = ask_cloud
+                    event(t="confirm", tool="cloud", text=q_)
+                    say(q_)
+                    messages.append({"role": "assistant", "content": q_})
+                    rounds = 0
+                elif st["use"] == "cloud":
+                    if cloud_answer(messages, say, send_text, speak, cancelled, persona, trace):
+                        rounds = 0
+                    else:
+                        st["use"] = brains["thinker"]
                 queued: list[dict] = []   # further tool calls from the same reply, run in order
                 if args.tools and (read_ := read_url_request(text)):
                     # "Read/summarise <link>": read it first instead of answering from memory.
                     queued.append({"name": "read_page", "arguments": {"urls": read_}})
                     emit("TOOLCALL", f"read request with a link: read_page {read_}")
-                for _round in range(8):  # at most a few tool calls per turn
+                for _round in range(rounds):  # at most a few tool calls per turn
                     # The first answer streams live for speed. After a tool has run, the follow-up is
                     # checked before it is spoken, so a claim that something was done can be caught.
                     # Stream live; when no action has run yet, each sentence is checked before it is
@@ -1881,7 +2046,7 @@ def main() -> None:
             prime(messages)
             st["cache_tokens"] = shared["tokens"]
             if brains["thinker"] is not None:
-                prime_brain(brains["thinker"], messages)   # its own copy of this session's system prompt
+                prime_brain_later(brains["thinker"], messages)   # in the background; talker turns go first
 
         gpu_jobs.put(prime_session)
         emit("STATUS", f"session start mode=Aria voice={voice} think={think} personality={personality or 'Custom'}")
@@ -1948,6 +2113,8 @@ def main() -> None:
                                     return
                                 prime(messages)
                                 st["cache_tokens"] = shared["tokens"]
+                                if brains["thinker"] is not None:
+                                    prime_brain_later(brains["thinker"], messages)
                             gpu_jobs.put(reprime)
                             st["announce"] = name_
                             emit("STATUS", f"personality switched to {name_}")

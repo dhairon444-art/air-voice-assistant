@@ -79,7 +79,7 @@ final class ModelProcess: ObservableObject {
             "--llm", chat ?? Self.voiceTalker(),
             "--voice", voice,
             "--text-prompt", persona,
-        ] + (chat != nil ? ["--chat"] : Self.thinkerArgs())
+        ] + (chat != nil ? ["--chat"] : Self.thinkerArgs()) + Self.heavyArgs()
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
@@ -89,6 +89,12 @@ final class ModelProcess: ObservableObject {
         env["HF_DATASETS_OFFLINE"] = "1"
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
         env["DO_NOT_TRACK"] = "1"
+        // The cloud key (Keychain) goes to the engine only when a cloud heavy brain is chosen; the
+        // engine removes it from its environment at start and never logs it.
+        if let ref = CloudRef(UserDefaults.standard.string(forKey: ModelRole.heavy.key) ?? ""),
+           let key = Keychain.get(ref.provider.rawValue) {
+            env["AIR_CLOUD_KEY_" + ref.provider.rawValue.uppercased()] = key
+        }
         env.removeValue(forKey: "HF_TOKEN")
         env.removeValue(forKey: "HUGGING_FACE_HUB_TOKEN")
         p.environment = env
@@ -166,6 +172,15 @@ final class ModelProcess: ObservableObject {
             out += ["--thinker-draft", "mlx-community/Qwen3-0.6B-4bit"]
         }
         return out
+    }
+
+    /// A cloud heavy brain with a key in the Keychain (local heavy brains come later).
+    nonisolated static func heavyArgs() -> [String] {
+        let h = UserDefaults.standard.string(forKey: ModelRole.heavy.key) ?? ""
+        guard let ref = CloudRef(h), Keychain.get(ref.provider.rawValue) != nil else { return [] }
+        var model = ref.model
+        if model == "default" { model = UserDefaults.standard.string(forKey: ref.provider.modelKey) ?? "default" }
+        return ["--heavy", CloudRef.id(ref.provider, model)] + (CloudPolicy.allowProfile ? ["--cloud-context"] : [])
     }
 
     /// Speculative decoding for the Deeper brain with Qwen3-0.6B as the draft (when it's downloaded and on).

@@ -475,6 +475,9 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if (e["ask"] as? Bool) != true { pendingLens = label }
             lastLensAt = Date()
             lastPath.insert("lens")
+        case "cloud":
+            // A reply from the cloud heavy brain: badge it like a lens chip.
+            pendingLens = "\((e["name"] as? String) ?? "Cloud") (cloud)"
         case "brain":
             // The path the last request took (Settings > Brain map lights it up).
             let who = (e["who"] as? String) ?? "talker"
