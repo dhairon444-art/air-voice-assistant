@@ -13,7 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return "Appearance"
         case .voice: return "Voice"
         case .personality: return "Personality"
-        case .brain: return "Brain"
+        case .brain: return "Brain map"
         case .online: return "Online"
         case .privacy: return "Privacy"
         case .memory: return "Memory"
@@ -25,7 +25,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return "paintpalette"
         case .voice: return "waveform"
         case .personality: return "person.crop.circle"
-        case .brain: return "cpu"
+        case .brain: return "point.3.connected.trianglepath.dotted"
         case .online: return "globe"
         case .privacy: return "hand.raised"
         case .memory: return "brain.head.profile"
@@ -55,7 +55,7 @@ struct SettingsView: View {
                 case .appearance: AppearanceSettings()
                 case .voice: VoiceSettings()
                 case .personality: PersonalitySettings()
-                case .brain: BrainSettings()
+                case .brain: BrainMapSettings()
                 case .online: OnlineSettings()
                 case .privacy: PrivacySettings()
                 case .memory: MemorySettings()
@@ -311,26 +311,14 @@ struct BrainSettings: View {
     var body: some View {
         Form {
             Section {
-                Picker("Brain", selection: $prefs.brain) {
-                    ForEach(Brain.allCases) { b in Text(b.label).tag(b) }
-                }
-                .pickerStyle(.radioGroup)
-                .disabled(web.live)
-                Text(prefs.brain.footer).foregroundStyle(.secondary)
-            } footer: {
-                Text("Changing the brain restarts Aria (about 15 to 30 seconds). Larger models were tested and don't fit in 24 GB alongside speech.")
-            }
-            Section {
                 Toggle("Show thinking", isOn: $prefs.showThinking)
             } footer: {
                 Text("A panel on the Talk screen shows Aria's reasoning (never spoken) and what she did: what she heard, tool calls, searches, pages read, sources and memory. When on, it's also saved in the session note under a collapsed Thinking section.")
             }
             Section {
-                Toggle("Think first", isOn: $prefs.thinkFirst).disabled(!prefs.brain.canThink)
+                Toggle("Thinker reasons first", isOn: $prefs.thinkFirst)
             } footer: {
-                Text(prefs.brain.canThink
-                     ? "Aria reasons silently before answering and says \"Let me think.\" Adds about 10 to 15 seconds."
-                     : "Needs the Deeper brain; the Fast brain can't reason first.")
+                Text("For questions the thinker answers, it reasons silently before answering. Adds about 10 to 15 seconds to those turns; chat and simple actions are never slowed down.")
             }
         }
     }

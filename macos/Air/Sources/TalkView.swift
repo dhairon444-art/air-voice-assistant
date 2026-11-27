@@ -201,9 +201,9 @@ struct TalkTopBar: View {
                 .popover(isPresented: $showVoice, arrowEdge: .bottom) { VoicePopover() }
                 .disabled(web.live)
             Spacer()
-            StatusChip(symbol: "cpu", text: prefs.brain == .fast ? "Fast" : "Deeper",
-                       help: "Brain: \(prefs.brain.label). Click to change.") { AppActions.openSettings(.brain) }
-            if prefs.thinkFirst && prefs.brain.canThink {
+            StatusChip(symbol: "cpu", text: AriaModels.chipText(),
+                       help: "Aria's models: \(AriaModels.chipHelp()). Click to change.") { AppActions.openSettings(.brain) }
+            if prefs.thinkFirst && !ModelProcess.thinkerArgs().isEmpty {
                 StatusChip(symbol: "brain", text: "Think first", help: "Aria reasons before answering. Click to change.") {
                     AppActions.openSettings(.brain)
                 }
@@ -326,9 +326,6 @@ struct PersonalityPopover: View {
             // About three rows show; the rest scroll inside (five at most when there are few).
             .frame(height: min(CGFloat(max(list.count, 1)), 3.5) * rowHeight)
             .onKeyPress(.return) { if let h = highlight { choose(h) }; return .handled }
-            if prefs.personality == "freespirit" && prefs.brain == .fast {
-                Text("Tip: Free Spirit is more reliable with the Deeper brain.").font(.caption).foregroundStyle(.secondary)
-            }
             if prefs.personality == "frenchtutor" {
                 Text("French sentences use the French voice; feedback covers words, not accent.").font(.caption).foregroundStyle(.secondary)
             }

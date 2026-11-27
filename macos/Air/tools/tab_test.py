@@ -51,14 +51,24 @@ class Engine:
         self.opened: list[str] = []
         self.toolcalls: list[str] = []
         self.app_tools: list[str] = []
+        self.lines: list[str] = []      # every AIR_ line of the current turn
+        self.all_lines: list[str] = []
 
     async def start(self):
         vault = Path(tempfile.mkdtemp(prefix="air-test-vault-"))
         cache = Path(tempfile.mkdtemp(prefix="air-test-cache-"))
-        env = dict(os.environ, AIR_DRY_OPEN="1", AIR_PROMPT_CACHE_DIR=str(cache), HF_HUB_OFFLINE="1")
+        env = dict(os.environ, AIR_DEBUG_GEN="1", AIR_DRY_OPEN="1", AIR_PROMPT_CACHE_DIR=str(cache), HF_HUB_OFFLINE="1")
         cmd = [self.a.python, "-u", str(SERVER), "--vault", str(vault), "--ui-dir", str(UI), "--llm", self.a.llm]
         if self.a.chat:
             cmd.append("--chat")
+        pid = getattr(self.a, "persona", "")
+        if pid:
+            presets = json.loads((HERE.parent / "Resources" / "personas.json").read_text())
+            cmd += ["--text-prompt", next(p["text"] for p in presets if p["id"] == pid)]
+        for flag in ("thinker", "thinker_draft", "route", "orch_cli"):
+            v = getattr(self.a, flag, "")
+            if v and flag != "orch_cli":
+                cmd += ["--" + flag.replace("_", "-"), v]
         self.proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.PIPE,
                                                          stdout=asyncio.subprocess.PIPE,
                                                          stderr=asyncio.subprocess.PIPE, env=env)
@@ -71,6 +81,9 @@ class Engine:
     async def _read_out(self, ready):
         async for raw in self.proc.stdout:
             line = raw.decode("utf-8", "replace").rstrip()
+            if line.startswith("AIR_"):
+                self.lines.append(line)
+                self.all_lines.append(line)
             if line.startswith("AIR_READY ") and not ready.done():
                 ready.set_result(int(line.split()[1]))
             elif line.startswith("AIR_TOOLCALL "):
@@ -89,48 +102,65 @@ class Engine:
             if line.startswith("DRYOPEN "):
                 self.opened.append(line[8:])
 
-    async def turn(self, text: str, timeout: float = 150) -> dict:
-        self.opened.clear(), self.toolcalls.clear(), self.app_tools.clear()
-        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch=off"
+    async def turn(self, text: str, timeout: float = 150, ws=None) -> dict:
+        if ws is not None:
+            return await self._turn_on(ws, text, timeout)
+        orch = getattr(self.a, "orch", "off")
+        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
+        async with aiohttp.ClientSession() as s, s.ws_connect(url, max_msg_size=0) as ws_:
+            while True:
+                msg = await asyncio.wait_for(ws_.receive(), 120)
+                if msg.type == aiohttp.WSMsgType.BINARY and msg.data[:1] == b"\x00":
+                    break
+            r = await self._turn_on(ws_, text, timeout)
+            await ws_.close()
+        await asyncio.sleep(0.3)
+        return r
+
+    async def session(self):
+        """A WebSocket for a multi-turn conversation (ready already received)."""
+        orch = getattr(self.a, "orch", "off")
+        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
+        self._http = aiohttp.ClientSession()
+        ws = await self._http.ws_connect(url, max_msg_size=0)
+        while True:
+            msg = await asyncio.wait_for(ws.receive(), 120)
+            if msg.type == aiohttp.WSMsgType.BINARY and msg.data[:1] == b"\x00":
+                return ws
+
+    async def _turn_on(self, ws, text: str, timeout: float) -> dict:
+        self.opened.clear(), self.toolcalls.clear(), self.app_tools.clear(), self.lines.clear()
         said, events, t0 = [], [], time.monotonic()
         first_act = None
-        async with aiohttp.ClientSession() as s, s.ws_connect(url, max_msg_size=0) as ws:
-            got_ready = False
-            seen_busy = False
-            while time.monotonic() - t0 < timeout:
-                try:
-                    msg = await asyncio.wait_for(ws.receive(), 5)
-                except asyncio.TimeoutError:
-                    if got_ready and seen_busy and not said and not events:
-                        continue
-                    continue
-                if msg.type != aiohttp.WSMsgType.BINARY:
-                    if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        break
-                    continue
-                kind, body = msg.data[0], msg.data[1:]
-                if kind == 0 and not got_ready:
-                    got_ready = True
-                    t0 = time.monotonic()
-                    await ws.send_str(json.dumps({"type": "say", "text": text}))
-                elif kind == 2:
-                    said.append(body.decode("utf-8", "replace"))
-                elif kind == 7:
-                    state = body.decode()
-                    if state != "listening":
-                        seen_busy = True
-                    elif seen_busy:
-                        break
-                elif kind == 9:
-                    ev = json.loads(body)
-                    events.append(ev)
-                    if ev.get("t") == "tool" and first_act is None:
-                        first_act = len(" ".join(said).split())
-                    if ev.get("t") == "confirm":
-                        await ws.send_str(json.dumps({"type": "confirm", "answer": "yes"}))
-                        seen_busy = False
-            await ws.close()
-        await asyncio.sleep(0.3)
+        await ws.send_str(json.dumps({"type": "say", "text": text}))
+        seen_busy = False
+        while time.monotonic() - t0 < timeout:
+            try:
+                msg = await asyncio.wait_for(ws.receive(), 5)
+            except asyncio.TimeoutError:
+                continue
+            if msg.type != aiohttp.WSMsgType.BINARY:
+                if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
+                continue
+            kind, body = msg.data[0], msg.data[1:]
+            if kind == 2:
+                said.append(body.decode("utf-8", "replace"))
+            elif kind == 7:
+                state = body.decode()
+                if state != "listening":
+                    seen_busy = True
+                elif seen_busy:
+                    break
+            elif kind == 9:
+                ev = json.loads(body)
+                events.append(ev)
+                if ev.get("t") == "tool" and first_act is None:
+                    first_act = len(" ".join(said).split())
+                if ev.get("t") == "confirm":
+                    await ws.send_str(json.dumps({"type": "confirm", "answer": "yes"}))
+                    seen_busy = False
+        await asyncio.sleep(0.5)
         tools = [e.get("name") for e in events if e.get("t") == "tool" and e.get("phase") == "start"]
         return {"request": text, "seconds": round(time.monotonic() - t0, 1), "said": " ".join(said).strip(),
                 "tools": tools, "app_tools": list(self.app_tools), "opened": list(self.opened),
@@ -138,7 +168,11 @@ class Engine:
                 "doit": any(e.get("t") == "doit" for e in events),
                 "nudged": any("nudge: announced" in c for c in self.toolcalls),
                 "words_before_acting": first_act if first_act is not None else len(" ".join(said).split()),
-                "toolcall_log": list(self.toolcalls)}
+                "toolcall_log": list(self.toolcalls),
+                "route": next((l[10:] for l in self.lines if l.startswith("AIR_ROUTE ")), ""),
+                "first_audio": next((float(m.group(1)) for l in self.lines
+                                     if (m := re.search(r"end-of-speech to first audio ([\d.]+)s", l))), None),
+                "latency": next((l[12:] for l in self.lines if l.startswith("AIR_LATENCY ")), "")}
 
     async def stop(self):
         if self.proc and self.proc.returncode is None:

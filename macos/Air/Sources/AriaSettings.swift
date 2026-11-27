@@ -177,7 +177,7 @@ final class Prefs: ObservableObject {
     var engineConfig: [String: Any] {
         ["voice": voice, "persona": persona, "personality": personality,
          "personalityName": Personas.name(personality),
-         "think": thinkFirst && brain.canThink, "web": factCheck, "showThinking": showThinking,
+         "think": thinkFirst, "web": factCheck, "showThinking": showThinking,
          "noise": noiseMode, "factcheck": factCheckPolicy, "maxtabs": maxTabs, "orch": orchestrator,
          "specialists": MainActor.assumeIsolated { Marketplace.shared.installedPersonalities.map(\.id).joined(separator: ",") }, "confirmtabs": confirmTabs, "sens": (interruptSensitivity * 100).rounded() / 100,
          "temperature": MainActor.assumeIsolated { Marketplace.shared.spec(personality)?.temperature } ?? 0.7]

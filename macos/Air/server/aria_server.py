@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -230,6 +230,11 @@ def main() -> None:
     p.add_argument("--persona-first", dest="persona_last", action="store_false",
                    help="old prompt layout (persona before the tool schema): slower personality switches")
     p.add_argument("--temp", type=float, default=0.7)
+    p.add_argument("--thinker", default="", help="Talker + Thinker: a stronger brain for turns that need reasoning")
+    p.add_argument("--thinker-draft", default="", help="draft model for the thinker (speculative decoding)")
+    p.add_argument("--heavy", default="", help="a big brain loaded only for deep tasks, unloaded after")
+    p.add_argument("--route", default="auto", choices=["auto", "talker", "thinker"],
+                   help="which brain answers when a thinker is loaded (auto: by the request)")
     p.add_argument("--silence-ms", type=int, default=600, help="pause that ends your turn")
     p.add_argument("--vad-margin-db", type=float, default=14.0, help="speech must be this far above the noise floor")
     p.add_argument("--vad-floor-db", type=float, default=-48.0, help="and above this absolute level")
@@ -406,10 +411,13 @@ def main() -> None:
     # template's own tool block first and the persona last keeps [tools + rules + memory] cached: a switch
     # re-processes only the persona (~300 tokens). One system message: as a separate message the 4B
     # model emitted fewer proper tool calls.
-    inline_tools = ""
-    if args.tools and args.persona_last:
+    def inline_for(tok_) -> str:
+        """The template's own tool block, rendered once, to put in the system text (Qwen-style templates)."""
+        inline_tools = ""
+        if not (args.tools and args.persona_last):
+            return ""
         try:
-            full_ = tokenizer.apply_chat_template([{"role": "system", "content": "@@SYS@@"}], tools=TOOLS, tokenize=False)
+            full_ = tok_.apply_chat_template([{"role": "system", "content": "@@SYS@@"}], tools=TOOLS, tokenize=False)
             block_ = full_.split("@@SYS@@", 1)[1].split("<|im_end|>", 1)[0].strip()
             inline_tools = block_ if block_.startswith("# Tools") and "<tools>" in block_ else ""
             if inline_tools and args.tools_format != "template":
@@ -421,6 +429,9 @@ def main() -> None:
                 inline_tools = head_ + "<tools>\n" + "\n".join(rows) + "\n</tools>" + tail_
         except Exception:
             inline_tools = ""
+        return inline_tools
+
+    inline_tools = inline_for(tokenizer)
 
     def tpl_tools():
         """Tools for apply_chat_template: none when the tool block is already inlined."""
@@ -445,7 +456,7 @@ def main() -> None:
     pc_dir = Path(os.environ.get("AIR_PROMPT_CACHE_DIR") or (Path.home() / "Library/Caches/Air/prompt"))   # tests use their own
     pc_key = (re.sub(r"[^A-Za-z0-9]+", "_", args.llm.split("/")[-1]) + ("-chat" if args.chat else "")
               + ("-d" + re.sub(r"[^A-Za-z0-9]+", "_", args.draft.split("/")[-1]) if draft is not None else ""))
-    PC_CAP = 2 * 1024 ** 3
+    PC_CAP = (4 if args.thinker else 2) * 1024 ** 3   # the thinker keeps its own file too
 
     def _common(a: list, b: list) -> int:
         n = 0
@@ -455,11 +466,13 @@ def main() -> None:
             n += 1
         return n
 
-    def pc_load(sys_tokens: list, have: int) -> bool:
-        """Swap in the best saved cache if it shares more of the prompt than what's in memory."""
+    def pc_load(sys_tokens: list, have: int, box: dict | None = None, key: str = "") -> bool:
+        """Swap in the best saved cache if it shares more of the prompt than what's in memory.
+        box/key: another brain's cache (the thinker), else the talker's."""
+        box, key = (box if box is not None else shared), (key or pc_key)
         try:
             best, best_n = None, have
-            for side in sorted(pc_dir.glob(f"{pc_key}-*.json"), key=lambda p_: p_.stat().st_mtime, reverse=True)[:6]:
+            for side in sorted(pc_dir.glob(f"{key}-*.json"), key=lambda p_: p_.stat().st_mtime, reverse=True)[:6]:
                 toks = json.loads(side.read_text())["tokens"]
                 n = _common(toks, sys_tokens)
                 if n > best_n + 256:
@@ -472,7 +485,8 @@ def main() -> None:
             # Materialise now, on this thread: lazily loaded arrays stay bound to the loading thread's
             # stream, and the GPU thread then fails with "There is no Stream(cpu, 1) in current thread".
             mx.eval([a_ for c_ in cache_ for a_ in (c_.state if isinstance(c_.state, (list, tuple)) else [c_.state])])
-            shared["cache"], shared["tokens"] = cache_, best[1][: cache_[0].offset]
+            off_ = next((c_.offset for c_ in cache_ if hasattr(c_, "offset")), len(best[1]))
+            box["cache"], box["tokens"] = cache_, best[1][:off_]
             best[0].touch()
             emit("STATUS", f"Prompt cache loaded from disk ({best_n} of {len(sys_tokens)} tokens) in {time.time() - t_:.1f}s")
             return True
@@ -480,18 +494,19 @@ def main() -> None:
             emit("STATUS", f"Prompt cache not used: {exc}")
             return False
 
-    def pc_save() -> None:
+    def pc_save(box: dict | None = None, key: str = "", model: str = "") -> None:
+        box, key, model = (box if box is not None else shared), (key or pc_key), (model or args.llm)
         try:
             import hashlib
             from mlx_lm.models.cache import save_prompt_cache
             pc_dir.mkdir(parents=True, exist_ok=True)
-            toks = list(shared["tokens"])
+            toks = list(box["tokens"])
             h = hashlib.sha1(json.dumps(toks).encode()).hexdigest()[:12]
-            f_ = pc_dir / f"{pc_key}-{h}.safetensors"
+            f_ = pc_dir / f"{key}-{h}.safetensors"
             if not f_.exists():
                 t_ = time.time()
-                save_prompt_cache(str(f_), shared["cache"])
-                (pc_dir / f"{pc_key}-{h}.json").write_text(json.dumps({"tokens": toks, "model": args.llm}))
+                save_prompt_cache(str(f_), box["cache"])
+                (pc_dir / f"{key}-{h}.json").write_text(json.dumps({"tokens": toks, "model": model}))
                 emit("STATUS", f"Prompt cache saved ({len(toks)} tokens, {f_.stat().st_size / 1e9:.2f} GB) in {time.time() - t_:.1f}s")
             # Least recently used first out, past the 2 GB cap (only Air's own cache files).
             files = sorted(pc_dir.glob("*.safetensors"), key=lambda p_: p_.stat().st_mtime, reverse=True)
@@ -560,6 +575,136 @@ def main() -> None:
                     emit("ERROR", f"model job failed: {exc!r}")
 
     threading.Thread(target=gpu_worker_main, name="air-gpu", daemon=True).start()
+
+    # ---------------- Talker + Thinker ----------------
+    # The loaded brain above is the talker (fast, conversational, does the tool calls). A thinker is a
+    # stronger brain with its own prompt cache that answers turns needing reasoning; a heavy brain is
+    # loaded only for deep tasks and unloaded after. All of them run on the one GPU thread, one at a time.
+    def load_brain(repo: str, draft_repo: str = "") -> dict:
+        t_ = time.time()
+        lm_, tok_ = load_lm(repo)
+        dr_ = None
+        if draft_repo:
+            try:
+                dr_, _ = load_lm(draft_repo)
+            except Exception as exc:
+                emit("STATUS", f"thinker draft not used: {exc}")
+        tpl_ = getattr(tok_, "chat_template", "") or ""
+        b = {"id": repo, "lm": lm_, "tok": tok_, "draft": dr_, "tokens": [],
+             "cache": make_prompt_cache(lm_) + (make_prompt_cache(dr_) if dr_ is not None else []),
+             "tool_start": getattr(tok_, "tool_call_start", None) or "<tool_call>",
+             "can_think": ("<think>" in tpl_ or "enable_thinking" in tpl_ or "<|channel>" in tpl_) and "Instruct-2507" not in repo,
+             "inline": inline_for(tok_), "load_s": round(time.time() - t_, 1)}
+        emit("MEMORY", f"{model_name(repo)} loaded in {b['load_s']}s, active={mx.get_active_memory() / 1e9:.2f}GB")
+        return b
+
+    def unload_brain(box: dict, key: str) -> None:
+        import gc
+        if box.get(key) is not None:
+            box[key] = None
+            gc.collect()
+            mx.clear_cache()
+            emit("MEMORY", f"{key} unloaded, active={mx.get_active_memory() / 1e9:.2f}GB")
+
+    def cache_offset(cache) -> int | None:
+        """Tokens held: hybrid models (Qwen3.5) start with linear-attention layers that have no offset."""
+        return next((c_.offset for c_ in cache if hasattr(c_, "offset")), None)
+
+    def _copy(x_):
+        return None if x_ is None else (type(x_)(_copy(y_) for y_ in x_) if isinstance(x_, (list, tuple)) else x_ + 0)
+
+    def cache_snapshot(cache) -> list:
+        st_ = [(type(c_), _copy(c_.state)) for c_ in cache]
+        mx.eval([x_ for _, xs_ in st_ for x_ in (xs_ if isinstance(xs_, (list, tuple)) else [xs_]) if isinstance(x_, mx.array)])
+        return st_
+
+    def cache_restore(snap: list) -> list:
+        return [cls_.from_state(_copy(xs_)) for cls_, xs_ in snap]
+
+    def brain_reset_to(b: dict, common: int) -> int:
+        """Trim this brain's cache back to `common` tokens. Caches that can't be trimmed (linear-attention
+        layers, e.g. Qwen3.5) start over instead; returns the tokens kept."""
+        from mlx_lm.models.cache import can_trim_prompt_cache
+        if len(b["tokens"]) <= common:
+            return len(b["tokens"])
+        if can_trim_prompt_cache(b["cache"]):
+            trim_prompt_cache(b["cache"], len(b["tokens"]) - common)
+            b["tokens"] = b["tokens"][:common]
+            return common
+        snap_ = b.get("snap")
+        if snap_ is not None and common >= len(snap_[0]) and b["tokens"][:len(snap_[0])] == snap_[0]:
+            # Back to the saved system-prompt state; only the conversation is processed again.
+            b["cache"], b["tokens"] = cache_restore(snap_[1]), list(snap_[0])
+            return len(snap_[0])
+        b["cache"] = make_prompt_cache(b["lm"]) + (make_prompt_cache(b["draft"]) if b["draft"] is not None else [])
+        b["tokens"] = []
+        return 0
+
+    def brain_messages(b: dict, msgs: list) -> tuple[list, list | None]:
+        """The conversation in this brain's own format: leading system messages merged into one (some
+        templates, e.g. Qwen3.5, allow only one, first), and the talker's inlined tool block swapped for
+        this brain's (or for the template's tools argument)."""
+        tools_ = None if (b["inline"] or not args.tools) else TOOLS
+        n_sys = 0
+        while n_sys < len(msgs) and msgs[n_sys]["role"] == "system":
+            n_sys += 1
+        if n_sys == 0 or (n_sys == 1 and b["inline"] == inline_tools):
+            return msgs, tools_
+        sys_ = "\n\n".join(m_["content"] for m_ in msgs[:n_sys])
+        if inline_tools and sys_.startswith(inline_tools):
+            sys_ = sys_[len(inline_tools):].lstrip("\n")
+        if b["inline"]:
+            sys_ = b["inline"] + "\n\n" + sys_
+        return [{"role": "system", "content": sys_}] + msgs[n_sys:], tools_
+
+    def system_tokens(tok_, bm: list, tools_) -> list:
+        """Tokens of the system part alone. Templates that refuse a system-only conversation get a
+        placeholder user turn, cut off again at its start."""
+        try:
+            return list(tok_.apply_chat_template(bm, tools=tools_, add_generation_prompt=False, tokenize=True,
+                                                 enable_thinking=False))
+        except Exception:
+            txt = tok_.apply_chat_template(bm + [{"role": "user", "content": "@@U@@"}], tools=tools_,
+                                           add_generation_prompt=False, tokenize=False, enable_thinking=False)
+            cut = txt.rfind("@@U@@")
+            head = txt[:cut]
+            for marker in ("<|im_start|>user", "<start_of_turn>user", "<|turn>user"):
+                if marker in head:
+                    head = head[:head.rfind(marker)]
+                    break
+            return list(tok_.encode(head, add_special_tokens=False))
+
+    def prime_brain(b: dict, msgs: list) -> None:
+        """Process the system prompt into this brain's cache (GPU thread)."""
+        n_sys = next((i_ for i_, m_ in enumerate(msgs) if m_["role"] != "system"), len(msgs))
+        bm, bt = brain_messages(b, msgs[:n_sys])
+        t_ = time.time()
+        sys_tokens = system_tokens(b["tok"], bm, bt)
+        common = _common(b["tokens"], sys_tokens)
+        key_ = "think-" + re.sub(r"[^A-Za-z0-9]+", "_", b["id"].split("/")[-1])
+        if common < len(sys_tokens) - 256 and pc_load(sys_tokens, common, box=b, key=key_):
+            common = _common(b["tokens"], sys_tokens)
+        todo_ = len(sys_tokens) - common
+        brain_reset_to(b, common)
+        if common < len(sys_tokens):
+            for _ in stream_generate(b["lm"], b["tok"], sys_tokens[common:], max_tokens=1, draft_model=b["draft"],
+                                     prompt_cache=b["cache"]):
+                pass
+        b["tokens"] = sys_tokens[:cache_offset(b["cache"]) or len(sys_tokens)]
+        from mlx_lm.models.cache import can_trim_prompt_cache
+        if not can_trim_prompt_cache(b["cache"]):
+            b["snap"] = (list(b["tokens"]), cache_snapshot(b["cache"]))   # can't trim: keep a copy to go back to
+        if todo_ > 512:
+            pc_save(box=b, key=key_, model=b["id"])
+        emit("STATUS", f"{model_name(b['id'])} primed ({len(b['tokens'])} tokens, {todo_} new) in {time.time() - t_:.1f}s")
+
+    brains: dict = {"thinker": None, "heavy": None}
+    if args.thinker:
+        try:
+            brains["thinker"] = load_brain(args.thinker, args.thinker_draft)
+            gpu_jobs.put(lambda: brains["thinker"] and prime_brain(brains["thinker"], build_messages(last_persona["text"])))
+        except Exception as exc:
+            emit("ERROR", f"thinker not loaded: {exc}")
     vision = Vision(emit, gpu_jobs)
 
     def side_llm(msgs: list, max_tokens: int) -> str:
@@ -588,6 +733,7 @@ def main() -> None:
         personality = (request.query.get("personality") or "").strip()[:40]
         # "Think first": let a hybrid model reason before answering (hidden from speech).
         think = request.query.get("think") == "1" and can_think
+        think_req = request.query.get("think") == "1"   # the thinker may reason even when the talker can't
         web_on = request.query.get("web", "1") != "0"   # online fact-check (on by default)
         # Smart (default): check only when it's needed; Always: every factual turn; Off.
         fc_mode = (request.query.get("factcheck") or "smart") if web_on else "off"
@@ -638,6 +784,8 @@ def main() -> None:
             "latencies": [],
             "labels": {},             # tool item id -> title, for spoken confirmations
             "recalled": set(),        # session notes already pulled into this conversation
+            "think_req": think_req,   # Think first was asked for (the thinker can reason even if the talker can't)
+            "use": None,              # the brain for this turn: None (talker) or the thinker
             "temp": min(1.2, max(0.0, float(request.query.get("temp") or args.temp))),  # personality's creativity
             "mute_voice": bool(args.chat),   # Chat: text only (Read aloud is separate)
             "checked": [],                   # topics already checked online this session (Smart fact-check)
@@ -1005,6 +1153,7 @@ def main() -> None:
                 trace("panel", f"{p_['name']} ({time.monotonic() - t0_:.1f}s): {take}")
             if not takes:
                 return ""
+            st["lens_on"] = "panel"   # the thinker writes the combined answer
             lines = "\n".join(f"- {p_['name']}: {t_}" for p_, t_ in takes)
             return (f"(Panel takes on this question:\n{lines}\nGive the combined answer in your own voice: what they agree on, "
                     "where they disagree and why, and your recommendation. At most five spoken sentences; name each "
@@ -1044,6 +1193,8 @@ def main() -> None:
             p_ = specialists[res["id"]]
             trace("route", f"Lens: {p_['name']} ({res.get('reason')}, match {res.get('score', 0):.2f}, {ms:.0f} ms)")
             event(t="lens", id=p_["id"], name=p_["name"], emoji=p_.get("emoji", ""), ask=orch_mode == "ask")
+            if orch_mode != "ask":
+                st["lens_on"] = p_["name"]   # a specialist lens is answered by the thinker
             if orch_mode == "ask":
                 return (f"(This looks like a question for the {p_['name']}. Ask the user in one short sentence whether "
                         f"they'd like the {p_['name']}'s view; if they've already said yes, answer through it.)")
@@ -1200,10 +1351,17 @@ def main() -> None:
             def generate(live: bool = True, check_claims: bool = False, check_sources: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
-                prompt = list(tokenizer.apply_chat_template(
-                    messages, tools=tpl_tools(), add_generation_prompt=True, tokenize=True,
-                    enable_thinking=think and not act_req["on"]))   # a clear action needs no reasoning first
-                cached = st["cache_tokens"]
+                B = st.get("use")   # None: the talker; else the thinker or heavy brain for this turn
+                if B is None:
+                    lm_, tok_, draft_, cache_, tool_start_ = lm, tokenizer, draft, st["cache"], TOOL_START
+                    msgs_, tools_, think_ = messages, tpl_tools(), think
+                else:
+                    lm_, tok_, draft_, cache_, tool_start_ = B["lm"], B["tok"], B["draft"], B["cache"], B["tool_start"]
+                    (msgs_, tools_), think_ = brain_messages(B, messages), st.get("think_req", False) and B["can_think"]
+                prompt = list(tok_.apply_chat_template(
+                    msgs_, tools=tools_, add_generation_prompt=True, tokenize=True,
+                    enable_thinking=think_ and not act_req["on"]))   # a clear action needs no reasoning first
+                cached = st["cache_tokens"] if B is None else B["tokens"]
                 common = 0
                 for x, y in zip(cached, prompt):
                     if x != y:
@@ -1211,7 +1369,11 @@ def main() -> None:
                     common += 1
                 common = min(common, len(prompt) - 1)
                 if len(cached) > common:
-                    trim_prompt_cache(st["cache"], len(cached) - common)
+                    if B is None:
+                        trim_prompt_cache(cache_, len(cached) - common)
+                    else:
+                        common = brain_reset_to(B, common)
+                        cache_ = B["cache"]
                 feed = prompt[common:]
                 perf["new_tokens"] += len(feed)
                 sampler = make_sampler(temp=st.get("temp", args.temp), top_p=0.9)
@@ -1227,8 +1389,8 @@ def main() -> None:
                 think_flush = [time.monotonic()]
                 while segments:
                     seg = segments.pop(0)
-                    for resp in stream_generate(lm, tokenizer, seg, max_tokens=args.max_tokens, draft_model=draft,
-                                                sampler=sampler, prompt_cache=st["cache"]):
+                    for resp in stream_generate(lm_, tok_, seg, max_tokens=args.max_tokens, draft_model=draft_,
+                                                sampler=sampler, prompt_cache=cache_):
                         perf["tokens"] += 1
                         if "tool_end" in marks and "r2_tok1" not in marks:
                             marks["r2_tok1"] = time.monotonic()
@@ -1248,7 +1410,7 @@ def main() -> None:
                                 full += close
                                 marks["think_s"] = marks.get("think_s", 0.0) + time.monotonic() - marks.get("think_start", time.monotonic())
                                 in_think = False
-                                segments.append(tokenizer.encode(close, add_special_tokens=False))
+                                segments.append(tok_.encode(close, add_special_tokens=False))
                                 break
                         if any(o in piece for o in THINK_OPEN) or (piece.strip() == "thought" and full.endswith("<|channel>thought")):
                             in_think = True
@@ -1276,8 +1438,8 @@ def main() -> None:
                             else:
                                 continue
                         buf += piece
-                        if TOOL_START in buf:
-                            buf, _ = buf.split(TOOL_START, 1)
+                        if tool_start_ in buf:
+                            buf, _ = buf.split(tool_start_, 1)
                             in_tool = True
                         # Display blocks: everything between ``` fences goes to the screen, not the voice.
                         while live and (disp["on"] or "```" in buf):
@@ -1364,23 +1526,30 @@ def main() -> None:
                     else:
                         speak(buf)
                 perf["llm_s"] += (time.monotonic() - t0) - (perf["tts_s"] - tts_before)
-                offset = st["cache"][0].offset if hasattr(st["cache"][0], "offset") else None
-                gen_tokens = tokenizer.encode(full, add_special_tokens=False) if full else []
-                st["cache_tokens"] = (prompt + gen_tokens)[:offset] if offset is not None else []
-                if offset is None:
-                    st["cache"] = shared["cache"] = new_cache()
-                shared["tokens"] = st["cache_tokens"]
+                offset = cache_offset(cache_)
+                gen_tokens = tok_.encode(full, add_special_tokens=False) if full else []
+                if B is None:
+                    st["cache_tokens"] = (prompt + gen_tokens)[:offset] if offset is not None else []
+                    if offset is None:
+                        st["cache"] = shared["cache"] = new_cache()
+                    shared["tokens"] = st["cache_tokens"]
+                else:
+                    B["tokens"] = (prompt + gen_tokens)[:offset] if offset is not None else []
+                    if offset is None:
+                        B["cache"] = make_prompt_cache(B["lm"]) + (make_prompt_cache(B["draft"]) if B["draft"] is not None else [])
                 if think_buf:
                     event(t="thought", text="".join(think_buf))
                     think_text.append("".join(think_buf))
                 if think_text and show["on"]:
                     recorder.thinking.append((time.strftime("%H:%M:%S"), "reasoning", "".join(think_text).strip()[:4000]))
                 think_text.clear()
+                if os.environ.get("AIR_DEBUG_GEN") == "1":
+                    emit("GEN", repr(full[:400]))
                 # Parse calls from the answer only: a call drafted inside the reasoning is not a call.
                 answer = re.sub(r"<think>.*?</think>|<\|channel>.*?<channel\|>", "", full, flags=re.S)
-                calls = parse_tool_calls(answer) or (parse_tool_calls(full) if TOOL_START in full else [])
+                calls = parse_tool_calls(answer) or (parse_tool_calls(full) if tool_start_ in full else [])
                 text = answer
-                text = re.sub(r"<\|?[a-z_\"]+\|?>", "", text.split(TOOL_START, 1)[0]).strip()
+                text = re.sub(r"<\|?[a-z_\"]+\|?>", "", text.split(tool_start_, 1)[0]).strip()
                 return text, calls
 
             def tool_message(payload: dict) -> dict:
@@ -1477,6 +1646,22 @@ def main() -> None:
                 plan_nudged = False
                 act_req["on"] = bool(args.tools and ACT_ASK.search(text or ""))
                 acted = confirmed_ok
+                st["use"] = None
+                if brains["thinker"] is None:
+                    st.pop("lens_on", None)
+                if brains["thinker"] is not None and not internal:
+                    who_, why_ = ("thinker", "forced") if args.route == "thinker" else ("talker", "forced") \
+                        if args.route == "talker" else route_brain(text, act_req["on"])
+                    lens_ = st.pop("lens_on", None)
+                    if lens_ and who_ == "talker" and not act_req["on"] and args.route == "auto":
+                        who_, why_ = "thinker", f"the {lens_} lens"
+                    emit("ROUTE", f"{who_} ({why_}): {text[:100]!r}")
+                    if who_ == "talker":
+                        event(t="brain", who="talker", why=why_)
+                    if who_ == "thinker":
+                        st["use"] = brains["thinker"]
+                        trace("brain", f"Thinker ({model_name(brains['thinker']['id'])}): {why_}")
+                        event(t="brain", who="thinker", why=why_)
 
                 def say(text_: str) -> None:
                     before_ = len(spoken)
@@ -1494,6 +1679,11 @@ def main() -> None:
 
                 if (switched := st.pop("announce", None)):
                     say(f"Switched to {switched}.")
+                if st["use"] is not None and not args.chat and not act_req["on"]:
+                    # The talker keeps the conversation going while the thinker works.
+                    say(("Let me dig into that.", "Good question; give me a moment.", "Let me think that through.")[len(st["latencies"]) % 3])
+                    marks["filler"] = True
+                    marks["hold"] = len(spoken)
                 queued: list[dict] = []   # further tool calls from the same reply, run in order
                 if args.tools and (read_ := read_url_request(text)):
                     # "Read/summarise <link>": read it first instead of answering from memory.
@@ -1690,6 +1880,8 @@ def main() -> None:
                 use_stt(MULTILINGUAL_STT)
             prime(messages)
             st["cache_tokens"] = shared["tokens"]
+            if brains["thinker"] is not None:
+                prime_brain(brains["thinker"], messages)   # its own copy of this session's system prompt
 
         gpu_jobs.put(prime_session)
         emit("STATUS", f"session start mode=Aria voice={voice} think={think} personality={personality or 'Custom'}")

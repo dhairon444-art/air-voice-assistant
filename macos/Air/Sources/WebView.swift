@@ -156,6 +156,10 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     private var autoSay: String?
     private var pendingLens: String?
     /// "Do it": Aria described an action twice without doing it; one tap asks her to act now.
+    /// Brain map: which roles answered the last request ("talker", "thinker", "lens", "heavy").
+    @Published private(set) var lastPath: Set<String> = []
+    @Published private(set) var lastRouteWhy: String?
+    private var lastLensAt: Date?
     @Published var doItText: String?
     func doIt() {
         guard let t = doItText else { return }
@@ -469,6 +473,15 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "lens":
             let label = [(e["emoji"] as? String) ?? "", (e["name"] as? String) ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
             if (e["ask"] as? Bool) != true { pendingLens = label }
+            lastLensAt = Date()
+            lastPath.insert("lens")
+        case "brain":
+            // The path the last request took (Settings > Brain map lights it up).
+            let who = (e["who"] as? String) ?? "talker"
+            var path: Set<String> = [who]
+            if let t = lastLensAt, Date().timeIntervalSince(t) < 8 { path.insert("lens") }
+            lastPath = path
+            lastRouteWhy = e["why"] as? String
         case "doit":
             doItText = e["text"] as? String
         case "note":

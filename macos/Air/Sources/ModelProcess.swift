@@ -76,10 +76,10 @@ final class ModelProcess: ObservableObject {
             "--vault", Vault.url.path,
             "--ui-dir", ui,
             "--parent-pid", String(getpid()),
-            "--llm", chat ?? brain.rawValue,
+            "--llm", chat ?? Self.voiceTalker(),
             "--voice", voice,
             "--text-prompt", persona,
-        ] + (chat != nil ? ["--chat"] : []) + Self.draftArgs(chat == nil ? brain : nil)
+        ] + (chat != nil ? ["--chat"] : Self.thinkerArgs())
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
@@ -147,6 +147,25 @@ final class ModelProcess: ObservableObject {
     func showDemoReady() {
         state = .ready(port: 0)
         status = "Ready"
+    }
+
+    /// Talker + Thinker (Settings > Brain > Aria's models): the talker is the voice; the thinker sits
+    /// behind it. A role whose model isn't installed falls back (talker: Qwen3 4B; thinker: none).
+    nonisolated static func voiceTalker() -> String {
+        let t = UserDefaults.standard.string(forKey: ModelRole.talker.key) ?? AriaModels.defaults[.talker]!
+        return AriaModels.isInstalled(t) ? t : Brain.fast.rawValue
+    }
+
+    nonisolated static func thinkerArgs() -> [String] {
+        let talker = voiceTalker()
+        let t = UserDefaults.standard.string(forKey: ModelRole.thinker.key) ?? AriaModels.defaults[.thinker]!
+        guard !t.isEmpty, t != talker, AriaModels.isInstalled(t) else { return [] }
+        var out = ["--thinker", t]
+        if t == Brain.deeper.rawValue, UserDefaults.standard.bool(forKey: "airSpeculative"),
+           AriaModels.isInstalled("mlx-community/Qwen3-0.6B-4bit") {
+            out += ["--thinker-draft", "mlx-community/Qwen3-0.6B-4bit"]
+        }
+        return out
     }
 
     /// Speculative decoding for the Deeper brain with Qwen3-0.6B as the draft (when it's downloaded and on).

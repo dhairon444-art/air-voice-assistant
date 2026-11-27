@@ -290,6 +290,26 @@ def describe(name: str, a: dict) -> str:
     return f"I'm about to run {name.replace('_', ' ')}.{q}"
 
 
+def _xml_calls(text: str) -> list[dict]:
+    """Qwen3.5 / Qwen3-Coder form: <function=name><parameter=key>value</parameter></function>.
+    Values that look like JSON (lists, numbers, booleans) are decoded."""
+    import json
+
+    out = []
+    for fm in re.finditer(r"<function=([\w.-]+)>(.*?)(?:</function>|$)", text, re.S):
+        name, body = fm.group(1), fm.group(2)
+        args = {}
+        for pm in re.finditer(r"<parameter=([\w.-]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=)|$)", body, re.S):
+            v = pm.group(2).strip()
+            try:
+                v = json.loads(v) if re.match(r"^[\[{\d\-]|^(true|false|null)$", v) else v
+            except ValueError:
+                pass
+            args[pm.group(1)] = v
+        out.append({"name": name, "arguments": args})
+    return out
+
+
 def parse_tool_calls(text: str) -> list[dict]:
     """Find tool calls in Qwen form (<tool_call>{json}</tool_call>) or Gemma 4 form
     (<|tool_call>call:name{key:<|"|>value<|"|>}<tool_call|>)."""
@@ -314,6 +334,10 @@ def parse_tool_calls(text: str) -> list[dict]:
         loose = parse_loose_calls(text) or _json_calls(text)
         if loose:
             return loose
+    if "<function=" in text:
+        xml = _xml_calls(text)
+        if xml:
+            return xml
     for m in re.finditer(r"<tool_call>", text):
         start = text.find("{", m.end())
         if start < 0:
@@ -758,3 +782,36 @@ def read_url_request(request: str) -> list[str]:
     if not urls or not _READ_URL.search(request or "") or re.search(r"^\W*open\b", request or "", re.I):
         return []
     return list(dict.fromkeys(urls))[:5]
+
+
+# ---------------- Talker + Thinker routing ----------------
+_DEEP_ASK = re.compile(r"\b(think (it through|hard|carefully|deeply|about it properly)|use (the|your) (deeper|bigger|best|smart(er)?) brain|"
+                       r"deep dive|in depth|in detail|thorough(ly)?|best answer)\b", re.I)
+_DEEP = re.compile(
+    r"\b(why (is|are|do|does|did|would|should|can't|don't)|how come|explain (why|how)|compare|comparison|versus|vs\.?|"
+    r"pros and cons|trade-?offs?|should i\b|which (is|one is|should) (better|best|i)|help me (decide|plan|think|figure|work out|choose|write)|"
+    r"plan (my|a|an|the|out)|strategy|strategi[sz]e|analy[sz]e|analysis|evaluate|critique|review (my|this)|"
+    r"step[- ]by[- ]step|walk me through|break (it|this) down|"
+    r"write (me )?(a|an|the|my) (email|letter|essay|plan|story|poem|cover letter|proposal|report|script|function|program|summary|post|bio)|"
+    r"draft (a|an|the|my)|rewrite|debug|calculate|work out|solve|prove|derive|what would happen|what if|"
+    r"research|look into|dig into|figure out|root cause|diagnos)", re.I)
+
+
+def route_brain(request: str, action: bool) -> tuple[str, str]:
+    """('talker'|'thinker', reason). The talker keeps chat and simple actions; reasoning, writing,
+    research and multi-step asks go to the thinker."""
+    t = (request or "").strip()
+    if not t or t.startswith("("):
+        return "talker", "internal or empty"
+    if _DEEP_ASK.search(t):
+        return "thinker", "asked for a careful answer"
+    multi = len(re.findall(r"\b(and then|then|after that|also|and also)\b", t, re.I))
+    if action:
+        if multi >= 2 or re.search(r"\bresearch\b|\bcompare\b", t, re.I):
+            return "thinker", "multi-step task"
+        return "talker", "a simple action"
+    if _DEEP.search(t):
+        return "thinker", "needs reasoning"
+    if len(t.split()) > 40:
+        return "thinker", "a long request"
+    return "talker", "conversation"
