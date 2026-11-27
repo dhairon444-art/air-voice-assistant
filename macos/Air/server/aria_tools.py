@@ -399,9 +399,14 @@ _ANNOUNCE = re.compile(r"\b(i'?ll|i will|i'?m going to|let me|i can|i'?d|here'?s
                        r"set|save|export|pull|fetch|launch|start|run|send|remind|summari[sz]e|go|navigate|visit|browse)\b", re.I)
 
 
+# "Opening GitHub and Wikipedia in new tabs." (present tense, as if it were happening) with no call.
+_DOING = re.compile(r"^\W*(opening|searching|launching|pausing|playing|adding|creating|setting|reading|checking|looking up|"
+                    r"pulling up|fetching|saving|exporting|switching|starting|running|sending|muting|unmuting|skipping)\b", re.I)
+
+
 def announces_plan(text: str) -> bool:
-    """The reply describes an action it is about to take (and so should have called a tool)."""
-    return bool(_ANNOUNCE.search(text or ""))
+    """The reply describes an action it is about to take, or is 'doing' (and so should have called a tool)."""
+    return bool(_ANNOUNCE.search(text or "") or _DOING.search(text or ""))
 
 
 ACT_NUDGE = ("(System note for the assistant, not from the user: you described what you would do but didn't call a "
@@ -549,7 +554,9 @@ _CLAIM = re.compile(
 _CLAIM2 = re.compile(
     r"\b(it'?s|it is|that'?s|they'?re|they are) (been )?(added|saved|set|scheduled|created|sent|deleted|moved)\b|"
     r"\byou'?ll (now )?(find|see) (it|them) in your (reminders|calendar|notes|vault|mail|messages)\b|"
-    r"^\W*(done|all set|all done)\W*$|^\W*switch(ed|ing) (to|into)\b", re.I)
+    r"^\W*(done|all set|all done)\W*$|^\W*switch(ed|ing) (to|into)\b|"
+    r"^\W*(opened|added|paused|created|saved|sent|scheduled|muted|unmuted|closed|quit|launched|moved|deleted|"
+    r"exported|set (a|the|your|it)|started|skipped|played)\b", re.I)
 
 
 def claims_action(text: str) -> bool:
@@ -658,6 +665,10 @@ def factcheck_decision(text: str, checked: list | None = None) -> tuple[bool, st
         return False, "nothing to check"
     if _FC_ASKED.search(t):
         return True, "you asked to check"
+    if ACT_ASK.search(t) and re.search(r"^\W*(\w+\W+){0,6}?(remind|add|create|schedule|open|close|quit|launch|play|pause|"
+                                       r"skip|mute|unmute|set|turn|switch|email|message|text|send|run|save|export|delete|"
+                                       r"move|cancel)\b", t, re.I):
+        return False, "a request to do something"
     words = topic_words(t)
     for prev in checked or []:
         if words and len(words & prev) >= max(1, int(0.5 * len(words))):
@@ -716,3 +727,34 @@ def open_targets(name: str, a: dict, n_sources: int = 0) -> int:
 
 OPEN_ASK = re.compile(r"\bopen\b.*(\b(and|,)\b.*\b(and|,)?|\b(all|these|those|the) (sources|links|results|sites)\b|"
                       r"\btop \d+\b|\b(two|three|four|five|six|seven|eight) (sites|tabs|results|links)\b)", re.I)
+
+
+_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_TOP_N = re.compile(r"\bopen\b.*?\b(?:the )?(?:top|first) (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b"
+                    r"(?: (?:results|links|sites|hits|pages|sources))?", re.I)
+
+
+def top_n_rewrite(request: str, call: dict) -> dict:
+    """'Search X and open the top 3 results': a model that only searched or researched gets
+    web_search_and_open(query, count=3), so the tabs actually open."""
+    m = _TOP_N.search(request or "")
+    if not m or call.get("name") not in ("web_search", "research"):
+        return call
+    q = str((call.get("arguments") or {}).get("query") or (call.get("arguments") or {}).get("question") or "").strip()
+    if not q:
+        return call
+    n = int(m.group(1)) if m.group(1).isdigit() else _NUM[m.group(1).lower()]
+    return {"name": "web_search_and_open", "arguments": {"query": q, "count": max(1, min(n, 15))}}
+
+
+
+_READ_URL = re.compile(r"\b(read|summari[sz]e|summary of|tl;?dr|what does|what's (on|in)|go through|skim|explain)\b", re.I)
+_URL = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
+def read_url_request(request: str) -> list[str]:
+    """Links in a request to read or summarise them (at most 5), else []."""
+    urls = [u.rstrip(".,;:!?") for u in _URL.findall(request or "")]
+    if not urls or not _READ_URL.search(request or "") or re.search(r"^\W*open\b", request or "", re.I):
+        return []
+    return list(dict.fromkeys(urls))[:5]

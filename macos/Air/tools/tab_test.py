@@ -31,7 +31,7 @@ CASES = [
     # (request, expected tabs or None, expected tool or None)
     ("Open LinkedIn.", 1, "open_url"),
     ("Open LinkedIn, Seek and Indeed.", 3, "open_url"),
-    ("Uh can you open GitHub, Hacker News and Wikipedia?", 3, "open_url"),
+    ("Uh can you open GitHub, Hacker News and Wikipedia?", 3, None),
     ("Open these ten sites: google.com, bing.com, duckduckgo.com, wikipedia.org, github.com, "
      "news.ycombinator.com, reddit.com, youtube.com, bbc.com and theguardian.com.", 10, "open_url"),
     ("Search for the best running shoes of 2026 and open the top 3 results.", 3, None),

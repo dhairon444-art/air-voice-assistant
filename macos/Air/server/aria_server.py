@@ -48,7 +48,7 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
-from aria_tools import (match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
+from aria_tools import (top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
                         ACTION_TOOLS)
@@ -1202,7 +1202,7 @@ def main() -> None:
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
                 prompt = list(tokenizer.apply_chat_template(
                     messages, tools=tpl_tools(), add_generation_prompt=True, tokenize=True,
-                    enable_thinking=think))
+                    enable_thinking=think and not act_req["on"]))   # a clear action needs no reasoning first
                 cached = st["cache_tokens"]
                 common = 0
                 for x, y in zip(cached, prompt):
@@ -1495,6 +1495,10 @@ def main() -> None:
                 if (switched := st.pop("announce", None)):
                     say(f"Switched to {switched}.")
                 queued: list[dict] = []   # further tool calls from the same reply, run in order
+                if args.tools and (read_ := read_url_request(text)):
+                    # "Read/summarise <link>": read it first instead of answering from memory.
+                    queued.append({"name": "read_page", "arguments": {"urls": read_}})
+                    emit("TOOLCALL", f"read request with a link: read_page {read_}")
                 for _round in range(8):  # at most a few tool calls per turn
                     # The first answer streams live for speed. After a tool has run, the follow-up is
                     # checked before it is spoken, so a claim that something was done can be caught.
@@ -1528,7 +1532,11 @@ def main() -> None:
                             messages.append({"role": "assistant", "content": reply_text})
                             messages.append({"role": "user", "content": PRIVATE_NUDGE if private else SOURCE_NUDGE})
                             continue
-                        if act_req["on"] and not used_tool and (guard.get("plan") or announces_plan(reply_text)):
+                        # A clear action request answered with a plan, or with a short line and no tool
+                        # ("Pause the music."), gets one nudge to act; questions and refusals don't.
+                        echo_ = (not acted and reply_text and len(reply_text.split()) <= 20 and "?" not in reply_text
+                                 and not refusal_phrase(reply_text))
+                        if act_req["on"] and not used_tool and (guard.get("plan") or announces_plan(reply_text) or echo_):
                             if not plan_nudged:
                                 plan_nudged = True
                                 emit("TOOLCALL", f"nudge: announced instead of acting: {reply_text[:120]!r}")
@@ -1547,7 +1555,8 @@ def main() -> None:
                         if suspicious and not nudged:
                             nudged = True
                             emit("TOOLCALL", f"nudge: reply announced an action without a tool call: {reply_text[:120]!r}")
-                            if live and claims_action(reply_text):
+                            if claims_action(reply_text) and not guard["hit"]:
+                                # Only when the claim was already spoken; a caught one was never voiced.
                                 say("Sorry, I haven't actually done that yet.")
                             messages.append({"role": "assistant", "content": reply_text})
                             messages.append({"role": "user", "content": NUDGE})
@@ -1565,6 +1574,9 @@ def main() -> None:
                         break
                     used_tool = True
                     call = calls[0]
+                    if (re_ := top_n_rewrite(text, call)) is not call:
+                        emit("TOOLCALL", f"top-N request: {call['name']} became web_search_and_open {re_['arguments']}")
+                        call = re_
                     name, targs = call["name"], dict(call["arguments"])
                     trace("call", f"{name}({json.dumps(call['arguments'], ensure_ascii=False)})")
                     messages.append({"role": "assistant", "content": reply_text,
