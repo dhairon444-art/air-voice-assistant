@@ -123,8 +123,11 @@ def _catalog_voices() -> set[str]:
 ALL_VOICES = set(VOICES) | _catalog_voices()
 
 
+PACKS_BOX: dict = {"packs": None}   # set in main(): voice packs (MeloTTS, Soprano, clones)
+
+
 def voice_ok(v: str) -> bool:
-    return v in ALL_VOICES
+    return v in ALL_VOICES or bool(PACKS_BOX["packs"] and PACKS_BOX["packs"].valid(v))
 PREVIEW_TEXT = "Hi, I'm Aria. This is how I sound when we talk. Ask me anything, and I'll tell you straight."
 
 MIC_RATE = 24000
@@ -382,6 +385,18 @@ def main() -> None:
     support_dir = Path(os.environ.get("AIR_SUPPORT_DIR") or (Path.home() / "Library/Application Support/Air"))   # tests use their own
     asst_mem = asst.AssistantMemory(support_dir / "assistant.json")
     # Speech speed (0.5-2x), set by voice ("speak faster", "speed 1.5"); remembered between launches.
+    from voice_packs import PackVoices, pack_of
+    packs = PackVoices(Path(os.environ.get("AIR_SUPPORT_DIR") or (Path.home() / "Library/Application Support/Air")), emit)
+    PACKS_BOX["packs"] = packs
+
+    def tts_pcm(text_: str, v_: str, speed_: float = 1.0):
+        """Float32 audio at 24 kHz for one sentence, from Kokoro or a voice pack (GPU thread)."""
+        if pack_of(v_):
+            yield from packs.generate(v_, text_, speed_)
+            return
+        for r_ in ensure_tts().generate(text_, voice=v_, lang_code=v_[0], speed=speed_):
+            yield np.array(r_.audio).reshape(-1)
+
     speed_file = Path(os.environ.get("AIR_SUPPORT_DIR") or (Path.home() / "Library/Application Support/Air")) / "speech.json"
     try:
         speed_box = {"v": max(0.5, min(2.0, float(json.loads(speed_file.read_text()).get("speed", 1.0))))}
@@ -1443,12 +1458,11 @@ def main() -> None:
                     spoken.append(chunk)
                     return not cancelled()
                 v_ = FRENCH_VOICE if lang["code"] == "fr" and is_french(chunk) else voice
-                for res in tts.generate(chunk, voice=v_, lang_code=v_[0], speed=speed_box["v"]):
+                for pcm in tts_pcm(chunk, v_, speed_box["v"]):
                     if st.get("mute_voice"):
                         break  # muted mid-sentence: stop the audio, keep the caption
                     if cancelled():
                         return False
-                    pcm = np.array(res.audio).reshape(-1)
                     pcm16 = (np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
                     now = time.monotonic()
                     if first_audio is None:
@@ -2213,6 +2227,11 @@ def main() -> None:
         lang = {"code": persona_language(persona)}
 
         def prime_session():
+            if pack_of(voice):
+                try:
+                    packs.ensure(voice)     # load the chosen voice pack before the first reply
+                except Exception as exc:
+                    emit("ERROR", f"voice pack {voice}: {exc}")
             if lang["code"] != "en":
                 use_stt(MULTILINGUAL_STT)
             prime(messages)
@@ -2466,8 +2485,7 @@ def main() -> None:
 
             def job():
                 try:
-                    pcm = np.concatenate([np.array(r.audio).reshape(-1)
-                                          for r in ensure_tts().generate(PREVIEW_TEXT, voice=v, lang_code=v[0])])
+                    pcm = np.concatenate(list(tts_pcm(PREVIEW_TEXT, v)))
                     loop.call_soon_threadsafe(fut.set_result, pcm)
                 except Exception as exc:  # pragma: no cover
                     loop.call_soon_threadsafe(fut.set_exception, exc)
@@ -2571,8 +2589,7 @@ def main() -> None:
             import io
             import wave as wavemod
             try:
-                parts = [np.array(r.audio).reshape(-1) for r in ensure_tts().generate(clean_for_speech(text), voice=voice_, lang_code=voice_[0],
-                                                                                  speed=speed_box["v"])]
+                parts = list(tts_pcm(clean_for_speech(text), voice_, speed_box["v"]))
                 pcm = (np.clip(np.concatenate(parts) if parts else np.zeros(1), -1, 1) * 32767).astype("<i2")
                 buf = io.BytesIO()
                 with wavemod.open(buf, "wb") as w:

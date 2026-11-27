@@ -29,7 +29,7 @@ enum Voices {
         builtIn + VoiceCatalog.added.compactMap { id in
             guard !builtIn.contains(where: { $0.id == id }), let v = VoiceCatalog.voice(id) else { return nil }
             return (v.id, v.name, v.note)
-        }
+        } + VoiceCatalog.extraVoices
     }
     static let defaultVoice = "af_heart"
     /// Display name for a voice id, including voices from older sessions.

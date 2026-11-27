@@ -610,5 +610,52 @@
    "style": [],
    "needs_pack": false
   }
+ ],
+ "packs": [
+  {
+   "id": "melo:EN-US",
+   "name": "Melo US",
+   "engine": "MeloTTS English",
+   "licence": "MIT",
+   "size_mb": 646,
+   "accent": "American",
+   "verified": false
+  },
+  {
+   "id": "melo:EN-BR",
+   "name": "Melo British",
+   "engine": "MeloTTS English",
+   "licence": "MIT",
+   "size_mb": 646,
+   "accent": "British",
+   "verified": false
+  },
+  {
+   "id": "melo:EN_INDIA",
+   "name": "Melo Indian",
+   "engine": "MeloTTS English",
+   "licence": "MIT",
+   "size_mb": 646,
+   "accent": "Indian",
+   "verified": false
+  },
+  {
+   "id": "melo:EN-AU",
+   "name": "Melo Australian",
+   "engine": "MeloTTS English",
+   "licence": "MIT",
+   "size_mb": 646,
+   "accent": "Australian",
+   "verified": false
+  },
+  {
+   "id": "soprano",
+   "name": "Soprano",
+   "engine": "Soprano 1.1 80M",
+   "licence": "see model card",
+   "size_mb": 284,
+   "accent": "American",
+   "verified": false
+  }
  ]
 }
