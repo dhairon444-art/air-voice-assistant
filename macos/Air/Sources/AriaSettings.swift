@@ -116,7 +116,7 @@ final class Prefs: ObservableObject {
         didSet { UserDefaults.standard.set(idleUnloadHours, forKey: "airIdleUnloadHours") }
     }
     /// Orchestrator: auto (bring in a specialist's lens when it fits), ask first, or off.
-    @Published var orchestrator: String = UserDefaults.standard.string(forKey: "airOrchestrator") ?? "auto" {
+    @Published var orchestrator: String = UserDefaults.standard.string(forKey: "airOrchestrator") ?? "off" {
         didSet { UserDefaults.standard.set(orchestrator, forKey: "airOrchestrator") }
     }
     /// Settings > Online picker: Smart / Always / Off.

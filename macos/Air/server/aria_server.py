@@ -220,7 +220,7 @@ def main() -> None:
     p.add_argument("--think-budget", type=int, default=256, help="max reasoning tokens when Think first is on")
     p.add_argument("--no-tools", dest="tools", action="store_false", help="conversation only")
     p.add_argument("--draft", default="", help="draft model for speculative decoding, e.g. mlx-community/Qwen3-0.6B-4bit")
-    p.add_argument("--tools-format", default="compact", choices=["template", "compact", "nowrap"],
+    p.add_argument("--tools-format", default="template", choices=["template", "compact", "nowrap"],
                    help="how the inlined tool schema is written (compact saves ~880 tokens)")
     p.add_argument("--persona-first", dest="persona_last", action="store_false",
                    help="old prompt layout (persona before the tool schema): slower personality switches")
@@ -587,7 +587,7 @@ def main() -> None:
         # Smart (default): check only when it's needed; Always: every factual turn; Off.
         fc_mode = (request.query.get("factcheck") or "smart") if web_on else "off"
         # Orchestrator: auto (default) / ask / off. Off as well when a specialist was picked directly.
-        orch_mode = request.query.get("orch") or "auto"
+        orch_mode = request.query.get("orch") or "off"
         try:
             panel_size = max(2, min(3, int(request.query.get("panel") or 3)))
         except ValueError:
