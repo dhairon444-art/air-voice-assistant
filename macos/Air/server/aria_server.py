@@ -752,6 +752,7 @@ def main() -> None:
         """Queue a background prime of this brain (the latest one replaces any not yet finished)."""
         idle_jobs[:] = [j_ for j_ in idle_jobs if j_[0] is not b]
         idle_jobs.append((b, prime_brain_steps(b, [dict(m_) for m_ in msgs if m_["role"] == "system"])))
+        gpu_jobs.put(lambda: None)   # wake the GPU thread if it's waiting with nothing queued
 
     brains: dict = {"thinker": None, "heavy": None}
     from cloud import CloudBrain, display_name, parse_ref, plain_history
