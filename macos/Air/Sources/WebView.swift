@@ -399,7 +399,8 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if autoSay == nil, let t = UserDefaults.standard.string(forKey: "AirAutoSay"), !t.isEmpty {
                 autoSay = t
                 setMicMuted(true)   // typed test turn only: never pick up the room
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.start() }
+                let m = UserDefaults.standard.string(forKey: "AirAutoMode") ?? ""
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.start(fresh: true, mode: m) }
             }
         case "levels":
             micLevel = body["mic"] as? Double ?? 0
@@ -516,6 +517,13 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "file_plan":
             filePlan = ((e["items"] as? [[String: Any]]) ?? []).map(PlanItem.init)
             filePlanSummary = (e["summary"] as? String) ?? ""
+            // Test hook (launch argument only): -AirAutoFileAfter <seconds> presses File on the card.
+            let after = UserDefaults.standard.double(forKey: "AirAutoFileAfter")
+            if after > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + after) { [weak self] in
+                    if self?.filePlan != nil { self?.answerPlan(true) }
+                }
+            }
         case "file_done":
             filePlan = nil
             filed += ((e["filed"] as? [[String: Any]]) ?? []).map(PlanItem.init)

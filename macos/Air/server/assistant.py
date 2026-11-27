@@ -25,7 +25,7 @@ ASSISTANT_PERSONA = (
     "question when something is vague (a missing date, an unclear list). Be brief, warm and practical; no "
     "opinions or tangents. Never claim something was filed unless the filing step reported it.")
 
-EXTRACT = """You file things for the user. Today is {today}. The next days are: {week}.
+EXTRACT = """You file things for the user. Today is {today}; tomorrow is {tomorrow}. The next days are: {week}.
 Split what they said into separate items.
 For each item give:
 kind: task | event | idea | note | person
@@ -143,7 +143,32 @@ def _future(when: str) -> str:
     return d.strftime("%Y-%m-%dT%H:%M")
 
 
-def normalise(raw: dict, lists: list[str], folders: list[str]) -> list[dict]:
+_URGENT = re.compile(r"\b(urgent|urgently|important|asap|as soon as possible|priority|critical|top of the list)\b", re.I)
+
+
+def _relative_day(it: dict, when: str, said: str) -> str:
+    """'tomorrow' / 'today' / 'tonight' next to this item in what was said: trust the words, not the model."""
+    if not when:
+        return when
+    from datetime import timedelta
+    words = " ".join(str(it.get(k, "")) for k in ("text", "detail", "when"))
+    key = str(it.get("text", "")).split()[:3]
+    near = ""
+    if key and said:
+        i = said.lower().find(" ".join(key).lower())
+        near = said[i:i + 120] if i >= 0 else ""
+    blob = (words + " " + near).lower()
+    base = datetime.now()
+    if "tomorrow" in blob:
+        day = base + timedelta(days=1)
+    elif re.search(r"\b(today|tonight|this (morning|afternoon|evening))\b", blob):
+        day = base
+    else:
+        return when
+    return day.strftime("%Y-%m-%d") + when[10:]
+
+
+def normalise(raw: dict, lists: list[str], folders: list[str], said: str = "") -> list[dict]:
     """Clean the model's items: known kinds, valid destinations, ISO dates, no empties or duplicates."""
     out, seen = [], set()
     for it in (raw.get("items") or [])[:12]:
@@ -155,7 +180,7 @@ def normalise(raw: dict, lists: list[str], folders: list[str]) -> list[dict]:
             continue
         seen.add(text.lower())
         dest = str(it.get("destination", "")).strip()
-        when = _future(_iso(str(it.get("when", "") or it.get("due", ""))))
+        when = _future(_relative_day(it, _iso(str(it.get("when", "") or it.get("due", ""))), said))
         if kind == "task":
             dest = next((l for l in lists if l.lower() == dest.lower()), None) or \
                 next((l for l in lists if dest and dest.lower() in l.lower()), "Personal" if "Personal" in lists else lists[0])
@@ -173,7 +198,8 @@ def normalise(raw: dict, lists: list[str], folders: list[str]) -> list[dict]:
             text = clean_title(text)
         out.append({"id": len(out) + 1, "kind": kind, "text": text[:160], "destination": dest,
                     "area": area_for(text + " " + str(it.get("detail", "")), str(it.get("area", ""))),
-                    "when": when, "priority": "high" if str(it.get("priority", "")).lower() == "high" else "",
+                    "when": when, "priority": "high" if str(it.get("priority", "")).lower() == "high"
+                    and (not said or _URGENT.search(said)) else "",
                     "detail": str(it.get("detail", "")).strip()[:300]})
     return out
 
@@ -186,9 +212,9 @@ def extract(generate, said: str, lists: list[str] | None = None, folders: list[s
     from datetime import timedelta
     now = datetime.now()
     week = ", ".join(f"{(now + timedelta(days=i)).strftime('%A')} = {(now + timedelta(days=i)).strftime('%Y-%m-%d')}" for i in range(1, 8))
-    prompt = EXTRACT.format(today=now.strftime("%A %Y-%m-%d %H:%M"), week=week, lists=", ".join(lists),
+    prompt = EXTRACT.format(today=now.strftime("%A %Y-%m-%d %H:%M"), tomorrow=(now + timedelta(days=1)).strftime("%A %Y-%m-%d"), week=week, lists=", ".join(lists),
                             folders=", ".join(folders[:30]), rules="; ".join(rules or []) or "none yet", said=said[:3000])
-    return normalise(_json_obj(generate([{"role": "user", "content": prompt}], 700)), lists, folders)
+    return normalise(_json_obj(generate([{"role": "user", "content": prompt}], 700)), lists, folders, said=said)
 
 
 _NOUN = {"task": "reminder", "event": "event", "idea": "idea", "note": "note", "person": "person"}

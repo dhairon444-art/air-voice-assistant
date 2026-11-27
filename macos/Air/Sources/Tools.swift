@@ -63,6 +63,7 @@ final class ToolRunner {
             case "vault_note": return try vaultNote(args)
             case "apple_note": return try await appleNote(args)
             case "assistant_open": return try await openReminders()
+            case "assistant_cleanup_test": return try await cleanupTest()
             case "assistant_reschedule": return try await reschedule(str(args, "reminder_id"), args["due"] as? String)
             // files
             case "find_files": return try findFiles(str(args, "query"))
@@ -435,6 +436,38 @@ final class ToolRunner {
             return d
         }
         return ok("\(items.count) open reminders", ["reminders": out])
+    }
+
+    /// Test hook (-AirCleanupTest): delete reminders, events and Notes notes titled "AIR TEST..." only.
+    private func cleanupTest() async throws -> Result {
+        try await access(.reminder)
+        let pred = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
+        let rems: [EKReminder] = await withCheckedContinuation { cont in
+            store.fetchReminders(matching: pred) { cont.resume(returning: $0 ?? []) }
+        }
+        var n = 0
+        // Also exact titles from -AirCleanupTitles "A|B", but only items created in the last 3 hours.
+        let exact = Set((UserDefaults.standard.string(forKey: "AirCleanupTitles") ?? "").split(separator: "|").map { String($0).lowercased() })
+        let recent = Date().addingTimeInterval(-3 * 3600)
+        func isTest(_ title: String?, _ created: Date?) -> Bool {
+            let t = (title ?? "").lowercased()
+            return t.uppercased().hasPrefix("AIR TEST") || (exact.contains(t) && (created ?? .distantPast) > recent)
+        }
+        for r in rems where isTest(r.title, r.creationDate) { try store.remove(r, commit: true); n += 1 }
+        try await access(.event)
+        let start = Date().addingTimeInterval(-2 * 86400), end = Date().addingTimeInterval(30 * 86400)
+        for e in store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil))
+            where isTest(e.title, e.creationDate) { try store.remove(e, span: .thisEvent, commit: true); n += 1 }
+        let script = """
+        tell application "Notes"
+          set c to count of (notes whose name starts with "AIR TEST")
+          if c > 0 then delete (notes whose name starts with "AIR TEST")
+          return c
+        end tell
+        """
+        let notes: String
+        do { notes = try await osa(script) } catch { notes = "error: \(error.localizedDescription)" }
+        return ok("Deleted \(n) test reminders and events, \(notes.trimmingCharacters(in: .whitespacesAndNewlines)) test notes")
     }
 
     /// Board drag and drop: a new due date (nil or "" clears it).

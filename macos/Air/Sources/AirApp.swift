@@ -49,6 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { await AssistantStore.shared.reload() }
         }
         AssistantStore.shared.startCheckins()
+        // Test hooks (launch arguments only).
+        let ud = UserDefaults.standard
+        if ud.bool(forKey: "AirAssistant") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showAssistant(start: false) }
+        }
+        if let dir = ud.string(forKey: "AirSnapDir") { startSnapshots(dir, every: max(2, ud.double(forKey: "AirSnapEvery"))) }
+        if ud.bool(forKey: "AirCleanupTest") {
+            Task {
+                let r = await ToolRunner.shared.run(name: "assistant_cleanup_test", args: [:])
+                let line = "\(Date()) \(r["summary"] ?? r["error"] ?? "")\n"
+                let u = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Air/test-cleanup.txt")
+                try? line.write(to: u, atomically: true, encoding: .utf8)
+            }
+        }
         prefs.onUIPrefsChanged = { [weak self] in self?.applyQuickAccess() }
 
         let root = ContentView()
@@ -212,6 +226,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppearanceMode.apply()
         NSApp.activate(ignoringOtherApps: true)
         if start { web.switchMode("assistant") }
+    }
+
+    private var snapTimer: Timer?
+    private var snapN = 0
+
+    /// Test hook: save each visible Air window as a PNG every few seconds (no screen recording needed).
+    private func startSnapshots(_ dir: String, every: Double) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        snapTimer = Timer.scheduledTimer(withTimeInterval: every, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.snapN += 1
+                for (i, w) in NSApp.windows.enumerated() where w.isVisible {
+                    guard let v = w.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    let name = (w.title.isEmpty ? "window\(i)" : w.title).replacingOccurrences(of: " ", with: "_")
+                    try? rep.representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: dir).appendingPathComponent(String(format: "%03d-%@.png", self.snapN, name)))
+                }
+            }
+        }
     }
 
     @objc func openAssistant() { showAssistant(start: web.live && web.mode != "assistant") }

@@ -188,21 +188,36 @@ struct AssistantView: View {
                 }
             }
             .animation(.snappy, value: web.filePlan)
-            SummaryPill(now: web.mode == "assistant" ? web.filed.count : 0, pending: store.pending.count,
-                        overdue: store.overdue.count, next: store.next) { withAnimation(.snappy) { sidebar.toggle() } }
-                .padding(12)
+            if !sidebar {
+                SummaryPill(now: web.mode == "assistant" ? web.filed.count : 0, pending: store.pending.count,
+                            overdue: store.overdue.count, next: store.next) { withAnimation(.snappy) { sidebar.toggle() } }
+                    .padding(12)
+            }
             if sidebar {
-                TaskSidebar(openBoard: { board = true }, close: { withAnimation(.snappy) { sidebar = false } })
+                TaskSidebar(openBoard: { board = true }, close: { withAnimation(.snappy) { sidebar = false } },
+                            page: UserDefaults.standard.string(forKey: "AirAssistantPanel") == "all" ? 1 : 0)
                     .frame(width: 320)
                     .frame(maxHeight: .infinity)
-                    .background(.regularMaterial)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .overlay(alignment: .leading) { Rectangle().fill(Color.secondary.opacity(0.25)).frame(width: 1) }
                     .transition(.move(edge: .trailing))
             }
         }
         .frame(minWidth: 560, minHeight: 600)
         .task { await store.reload() }
+        .onAppear {
+            switch UserDefaults.standard.string(forKey: "AirAssistantPanel") {   // test hook
+            case "sidebar", "all": sidebar = true
+            case "board": sidebar = true; board = true
+            default: break
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .airFiled)) { _ in Task { await store.reload() } }
-        .sheet(isPresented: $board) { TaskBoard().frame(minWidth: 860, minHeight: 560) }
+        .sheet(isPresented: $board) {
+            TaskBoard().frame(minWidth: 860, minHeight: 560)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .airThemed()
+        }
     }
 
     private var statusLine: String {
@@ -281,12 +296,13 @@ struct SummaryPill: View {
                 }
                 .font(.caption.weight(.semibold)).monospacedDigit()
                 ForEach(next) { t in
-                    Text(t.title).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(t.title).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                 }
             }
+            .frame(maxWidth: 240, alignment: .trailing)
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(Capsule().fill(.thinMaterial))
-            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.25)))
+            .background(RoundedRectangle(cornerRadius: 16).fill(.thinMaterial))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.secondary.opacity(0.25)))
         }
         .buttonStyle(.plain)
         .help("Your tasks: this conversation, everything open, and what's overdue")
@@ -365,7 +381,7 @@ struct TaskSidebar: View {
     @ObservedObject var store = AssistantStore.shared
     let openBoard: () -> Void
     let close: () -> Void
-    @State private var page = 0
+    @State var page = 0
     @State private var drag: CGFloat = 0
 
     var body: some View {
@@ -380,9 +396,9 @@ struct TaskSidebar: View {
             .padding(12)
             Divider()
             GeometryReader { g in
-                HStack(spacing: 0) {
-                    nowPage.frame(width: g.size.width)
-                    allPage.frame(width: g.size.width)
+                HStack(alignment: .top, spacing: 0) {
+                    nowPage.frame(width: g.size.width, alignment: .topLeading)
+                    allPage.frame(width: g.size.width, alignment: .topLeading)
                 }
                 .offset(x: -CGFloat(page) * g.size.width + drag)
                 .gesture(DragGesture(minimumDistance: 20)
@@ -422,6 +438,7 @@ struct TaskSidebar: View {
                 }
             }
             .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -438,6 +455,7 @@ struct TaskSidebar: View {
                 }
             }
             .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
