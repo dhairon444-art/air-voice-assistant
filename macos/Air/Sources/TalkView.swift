@@ -8,6 +8,7 @@ enum AppActions {
     static var showOnboarding: () -> Void = {}
     static var showMarketplace: () -> Void = {}
     static var showTalk: () -> Void = {}
+    static var showAssistant: () -> Void = {}
 }
 
 // MARK: - Talk screen
@@ -496,6 +497,8 @@ struct OrbMenuItems: View {
             Button { close(); web.start() } label: { Label("Start talking", systemImage: "play.fill") }
                 .disabled(!web.engineReady)
         }
+        Divider()
+        Button { close(); AppActions.showAssistant() } label: { Label("Assistant mode", systemImage: "checklist") }
         Divider()
         Button { close(); web.toggleMicMute() } label: {
             Label(web.micMuted ? "Unmute mic" : "Mute mic", systemImage: web.micMuted ? "mic.fill" : "mic.slash.fill")

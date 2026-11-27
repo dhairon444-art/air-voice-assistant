@@ -230,7 +230,7 @@ class SessionRecorder:
     """
 
     def __init__(self, vault: Path, voice: str, persona: str, *, mode: str, model_id: str,
-                 assistant: str, user_side: bool):
+                 assistant: str, user_side: bool, folder: str = "Sessions"):
         self.vault = vault
         self.voice = voice
         self.persona = persona
@@ -252,7 +252,7 @@ class SessionRecorder:
         self.last_mono: dict[str, float] = {}
         self.lock = threading.Lock()
         self.finished = False
-        folder = vault / "Sessions" / self.start.strftime("%Y") / self.start.strftime("%m")
+        folder = vault / folder / self.start.strftime("%Y") / self.start.strftime("%m")
         folder.mkdir(parents=True, exist_ok=True)
         base = self.start.strftime("%Y-%m-%d %H%M")
         path = folder / f"{base}.md"

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let settingsNav = SettingsNav()
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
+    private var assistantWindow: NSWindow?
     var island: IslandController?
     private var liveSub: Any?
     private var statusItem: NSStatusItem?
@@ -39,6 +40,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppActions.showOnboarding = { [weak self] in self?.ui.showOnboarding = true; self?.showMain() }
         AppActions.showMarketplace = { [weak self] in self?.ui.tab = .personalities; self?.showMain() }
         AppActions.showTalk = { [weak self] in self?.showTalk() }
+        AppActions.showAssistant = { [weak self] in self?.showAssistant(start: true) }
+        web.onAssistantMode = { [weak self] in self?.showAssistant(start: true) }
+        web.onCheckin = { kind, time in AssistantStore.shared.setCheckin(kind, time) }
+        AssistantStore.shared.onCheckinDue = { [weak self] kind in
+            self?.showAssistant(start: false)
+            AssistantStore.shared.briefShown = kind
+            Task { await AssistantStore.shared.reload() }
+        }
+        AssistantStore.shared.startCheckins()
         prefs.onUIPrefsChanged = { [weak self] in self?.applyQuickAccess() }
 
         let root = ContentView()
@@ -180,6 +190,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Assistant mode in its own window (gold orb, tasks, filing). start: begin an assistant conversation,
+    /// ending a Talk conversation first if one is live.
+    func showAssistant(start: Bool) {
+        wakeEngine()
+        if assistantWindow == nil {
+            let view = AssistantView().airThemed()
+                .environmentObject(model).environmentObject(web).environmentObject(prefs).environmentObject(ui)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 720),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+            w.title = "Assistant"
+            w.toolbarStyle = .unified
+            w.contentView = NSHostingView(rootView: view)
+            w.isReleasedWhenClosed = false
+            w.setFrameAutosaveName("AirAssistant")
+            if !w.setFrameUsingName("AirAssistant") { w.center() }
+            assistantWindow = w
+        }
+        assistantWindow?.makeKeyAndOrderFront(nil)
+        AppearanceMode.apply()
+        NSApp.activate(ignoringOtherApps: true)
+        if start { web.switchMode("assistant") }
+    }
+
+    @objc func openAssistant() { showAssistant(start: web.live && web.mode != "assistant") }
+
     @objc func openSettingsMenu() { showSettings(settingsNav.tab) }
     @objc func showTalk() { ui.tab = .talk; showMain() }
     @objc func showHistory() { ui.tab = .history; showMain() }
@@ -308,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(vItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Open Air", action: #selector(showTalk), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Assistant Mode", action: #selector(openAssistant), keyEquivalent: "").target = self
         menu.addItem(withTitle: "History", action: #selector(showHistory), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(openSettingsMenu), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -399,6 +436,7 @@ struct AirMain {
         view.addItem(item("Talk", #selector(AppDelegate.showTalk), "1", target: d))
         view.addItem(item("History", #selector(AppDelegate.showHistory), "2", target: d))
         view.addItem(item("Personalities", #selector(AppDelegate.showPersonalities), "3", target: d))
+        view.addItem(item("Assistant Mode", #selector(AppDelegate.openAssistant), "a", [.command, .shift], target: d))
         view.addItem(.separator())
         view.addItem(item("Show Thinking", #selector(AppDelegate.toggleThinking), "t", [.command, .option], target: d))
         viewItem.submenu = view

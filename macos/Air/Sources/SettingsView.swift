@@ -5,7 +5,7 @@ import SwiftUI
 import ServiceManagement
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, appearance, voice, personality, brain, online, privacy, memory
+    case general, appearance, voice, personality, brain, assistant, online, privacy, memory
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .voice: return "Voice"
         case .personality: return "Personality"
         case .brain: return "Brain map"
+        case .assistant: return "Assistant"
         case .online: return "Online"
         case .privacy: return "Privacy"
         case .memory: return "Memory"
@@ -26,6 +27,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .voice: return "waveform"
         case .personality: return "person.crop.circle"
         case .brain: return "point.3.connected.trianglepath.dotted"
+        case .assistant: return "checklist"
         case .online: return "globe"
         case .privacy: return "hand.raised"
         case .memory: return "brain.head.profile"
@@ -56,6 +58,7 @@ struct SettingsView: View {
                 case .voice: VoiceSettings()
                 case .personality: PersonalitySettings()
                 case .brain: BrainMapSettings()
+                case .assistant: AssistantSettings()
                 case .online: OnlineSettings()
                 case .privacy: PrivacySettings()
                 case .memory: MemorySettings()
@@ -603,5 +606,71 @@ struct ScreenAwarenessSection: View {
         } footer: {
             Text("On request: say “watch my screen” (or use the menu bar) and Aria keeps a light, text-only sense of the front window until you say “stop watching”. Always aware: this runs whenever a conversation is live, so “what's this?” just works; it pauses when the conversation ends or after 10 minutes without changes. Either way: excluded apps are never captured, only the window's text is read on this Mac, nothing goes online, frames are kept in memory only, and the session note records just “watched: app, window”.")
         }
+    }
+}
+
+
+/// Settings > Assistant: check-in times (also changeable by voice), where things are filed, learned rules.
+struct AssistantSettings: View {
+    @ObservedObject var store = AssistantStore.shared
+    @State private var rules: [String] = []
+    private static let rulesURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Air/assistant.json")
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Daily check-ins", isOn: $store.checkinsOn)
+                timeRow("Morning brief", $store.briefTime)
+                timeRow("Wrap-up", $store.wrapupTime)
+            } header: { Text("Check-ins") } footer: {
+                Text("The Assistant window opens with today's events, what's due and what's overdue. You can also say \"move my morning brief to 8\". A check-in more than two hours late is skipped.")
+            }
+            Section {
+                LabeledContent("Tasks", value: "Reminders: Freelance, Job Search, Personal, Subscriptions, Shopping")
+                LabeledContent("Events", value: "Calendar")
+                LabeledContent("Ideas", value: "Apple Notes, folder Ideas (tagged)")
+                LabeledContent("Notes", value: "A folder in your Air vault")
+                LabeledContent("People", value: "The People note in your vault")
+                LabeledContent("History", value: "Vault folder Assistant, and Assistant log.md")
+            } header: { Text("Where things go") } footer: {
+                Text("Aria shows one card with everything she's about to file; nothing is filed until you say OK. Ideas need permission for Air to use Notes the first time.")
+            }
+            Section {
+                if rules.isEmpty {
+                    Text("None yet. When you correct where something goes, Aria remembers it here.").foregroundStyle(.secondary)
+                }
+                ForEach(rules, id: \.self) { r in
+                    HStack {
+                        Text(r).font(.callout)
+                        Spacer()
+                        Button { remove(r) } label: { Image(systemName: "trash") }.buttonStyle(.plain).help("Forget this rule")
+                    }
+                }
+            } header: { Text("Rules learned from your corrections") }
+        }
+        .onAppear(perform: load)
+    }
+
+    private func timeRow(_ title: String, _ value: Binding<String>) -> some View {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"
+        return DatePicker(title, selection: Binding(
+            get: { f.date(from: value.wrappedValue) ?? Date() },
+            set: { value.wrappedValue = f.string(from: $0) }), displayedComponents: .hourAndMinute)
+            .disabled(!store.checkinsOn)
+    }
+
+    private func load() {
+        guard let d = try? Data(contentsOf: Self.rulesURL),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { rules = []; return }
+        rules = (o["rules"] as? [String]) ?? []
+    }
+
+    private func remove(_ r: String) {
+        guard let d = try? Data(contentsOf: Self.rulesURL),
+              var o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        o["rules"] = ((o["rules"] as? [String]) ?? []).filter { $0 != r }
+        if let out = try? JSONSerialization.data(withJSONObject: o, options: .prettyPrinted) { try? out.write(to: Self.rulesURL) }
+        load()
     }
 }

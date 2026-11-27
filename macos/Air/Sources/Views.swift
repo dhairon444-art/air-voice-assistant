@@ -55,6 +55,9 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 10) {
                     LiveToggle()
+                    Button { AppActions.showAssistant() } label: { Image(systemName: "checklist") }
+                        .help("Assistant mode (⇧⌘A)")
+                        .accessibilityLabel("Assistant mode")
                     if ui.tab == .talk {
                         Toggle(isOn: $prefs.showThinking) { Image(systemName: "sidebar.right") }
                             .toggleStyle(.button)

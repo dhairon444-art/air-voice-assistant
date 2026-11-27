@@ -156,6 +156,34 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     private var autoSay: String?
     private var pendingLens: String?
     /// "Do it": Aria described an action twice without doing it; one tap asks her to act now.
+    // MARK: Assistant mode
+    /// The plan Aria proposes before filing (one card), and what was filed in this conversation.
+    @Published var filePlan: [PlanItem]?
+    @Published private(set) var filePlanSummary = ""
+    @Published private(set) var filed: [PlanItem] = []
+    var onAssistantMode: (() -> Void)?
+    var onCheckin: ((String, String) -> Void)?
+
+    private var pendingMode: String?
+
+    /// Talk <-> Assistant: end the current conversation (if any) and start one in the other mode.
+    func switchMode(_ m: String) {
+        guard engineReady else { return }
+        if live {
+            if mode == m { return }
+            pendingMode = m
+            stop()
+        } else {
+            start(fresh: m != mode, mode: m)
+        }
+    }
+
+    func answerPlan(_ yes: Bool, items: [PlanItem]? = nil) {
+        let list = (items ?? filePlan ?? []).map(\.dict)
+        sendToEngine(["type": "file_answer", "answer": yes ? "yes" : "no", "items": list])
+        filePlan = nil
+    }
+
     /// Brain map: which roles answered the last request ("talker", "thinker", "lens", "heavy").
     @Published private(set) var lastPath: Set<String> = []
     @Published private(set) var lastRouteWhy: String?
@@ -263,15 +291,20 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
 
     /// Start talking. Within the idle window (Settings > General, default 30 min) this continues the
     /// same conversation and note; `fresh` starts a new one; `resume` continues a given note (History).
-    func start(resume: String? = nil, fresh: Bool = false) {
+    /// "" for Talk, "assistant" for Assistant mode (its own persona, notes folder and filing).
+    @Published private(set) var mode = ""
+
+    func start(resume: String? = nil, fresh: Bool = false, mode: String = "") {
         guard engineReady, !live else { return }
+        if mode != self.mode { currentNote = nil; turns = []; filePlan = nil; filed = [] }
+        self.mode = mode
         let idle = (UserDefaults.standard.object(forKey: "airNewConversationMinutes") as? Double) ?? 30
         var note = resume
         if note == nil, !fresh, let n = currentNote, Date().timeIntervalSince(lastActive) < idle * 60 { note = n }
         if note == nil || resume != nil { turns = [] }
         error = nil
         applyMutes()
-        js("window.airStart && window.airStart(\(Self.json(["resume": note ?? ""])))")
+        js("window.airStart && window.airStart(\(Self.json(["resume": note ?? "", "mode": mode])))")
     }
     /// "New conversation": end this one and start a fresh note.
     func newConversation() {
@@ -424,6 +457,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "ended", "idle":
             let was = live
             live = false
+            if let m = pendingMode {
+                // Switching between Talk and Assistant: start the other one once this has closed.
+                pendingMode = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.start(fresh: true, mode: m) }
+            }
             paused = false
             state = .idle
             confirm = nil
@@ -475,6 +513,17 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if (e["ask"] as? Bool) != true { pendingLens = label }
             lastLensAt = Date()
             lastPath.insert("lens")
+        case "file_plan":
+            filePlan = ((e["items"] as? [[String: Any]]) ?? []).map(PlanItem.init)
+            filePlanSummary = (e["summary"] as? String) ?? ""
+        case "file_done":
+            filePlan = nil
+            filed += ((e["filed"] as? [[String: Any]]) ?? []).map(PlanItem.init)
+            NotificationCenter.default.post(name: .airFiled, object: nil)
+        case "checkin":
+            if let k = e["kind"] as? String, let t = e["time"] as? String { onCheckin?(k, t) }
+        case "assistant_mode":
+            onAssistantMode?()
         case "cloud":
             // A reply from the cloud heavy brain: badge it like a lens chip.
             pendingLens = "\((e["name"] as? String) ?? "Cloud") (cloud)"
@@ -667,4 +716,51 @@ struct EngineHost: NSViewRepresentable {
     let controller: WebController
     func makeNSView(context: Context) -> WKWebView { controller.webView }
     func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+
+
+extension Notification.Name {
+    static let airFiled = Notification.Name("airFiled")
+}
+
+/// One item of a filing plan: a task, event, idea, note or person, with where it goes.
+struct PlanItem: Identifiable, Equatable {
+    var id: Int
+    var kind: String
+    var text: String
+    var destination: String
+    var area: String
+    var when: String
+    var priority: String
+    var detail: String
+    var ok: Bool?
+    var error: String?
+
+    init(_ d: [String: Any]) {
+        id = (d["id"] as? Int) ?? Int((d["id"] as? NSNumber)?.intValue ?? 0)
+        kind = (d["kind"] as? String) ?? "task"
+        text = (d["text"] as? String) ?? ""
+        destination = (d["destination"] as? String) ?? ""
+        area = (d["area"] as? String) ?? "Personal"
+        when = (d["when"] as? String) ?? ""
+        priority = (d["priority"] as? String) ?? ""
+        detail = (d["detail"] as? String) ?? ""
+        ok = d["ok"] as? Bool
+        error = d["error"] as? String
+    }
+
+    var dict: [String: Any] {
+        ["id": id, "kind": kind, "text": text, "destination": destination, "area": area, "when": when,
+         "priority": priority, "detail": detail]
+    }
+
+    var symbol: String {
+        switch kind {
+        case "event": return "calendar"
+        case "idea": return "lightbulb"
+        case "note": return "doc.text"
+        case "person": return "person.crop.circle"
+        default: return "checklist"
+        }
+    }
 }

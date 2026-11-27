@@ -118,7 +118,7 @@ struct HistoryView: View {
 
     static let flagNames: [(String, String, String)] = [
         ("sources", "Has sources", "link"), ("files", "Has files", "doc"), ("tools", "Used tools", "hammer"),
-        ("screen", "Used the screen", "eye"), ("pinned", "Pinned", "pin"),
+        ("screen", "Used the screen", "eye"), ("pinned", "Pinned", "pin"), ("assistant", "Assistant", "checklist"),
     ]
 
     private var filtered: [HistoryEntry] {
@@ -137,6 +137,7 @@ struct HistoryView: View {
         if flags.contains("tools") { items = items.filter(\.usedTools) }
         if flags.contains("screen") { items = items.filter(\.usedScreen) }
         if flags.contains("pinned") { items = items.filter { store.isPinned($0) } }
+        if flags.contains("assistant") { items = items.filter { $0.note.url.pathComponents.contains("Assistant") } }
         switch lengthFilter {
         case "short": items = items.filter { $0.seconds < 120 }
         case "medium": items = items.filter { $0.seconds >= 120 && $0.seconds < 600 }

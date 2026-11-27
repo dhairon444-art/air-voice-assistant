@@ -48,6 +48,11 @@ from web_tools import Connectivity, WebSession
 from vision import Vision
 from research import Researcher, search as web_search_backend
 from vad import FRAME, TurnDetector, use_silero
+import assistant as asst
+# In Assistant mode these are commands for Aria herself, not things to file.
+NOT_FILING = re.compile(r"^\W*(please |aria,? |can you |could you )*(open|close|quit|launch|search|look up|google|play|pause|"
+                        r"skip|mute|unmute|switch|watch|email|message|text|send|run|read|summari[sz]e|show|stop|"
+                        r"speak|talk|new topic|start over)\b", re.I)
 from aria_tools import (parse_speed, wants_heavy, route_brain, top_n_rewrite, read_url_request, match_choice, spoken_choice, refusal_phrase, claims_source, SOURCE_NUDGE, claims_private, PRIVATE_NUDGE, ACT_ASK, ACT_NUDGE, announces_plan, factcheck_decision, topic_words, merge_calls, open_targets, OPEN_ASK, MULTI_OPEN, VISION_TOOLS, WEB_TOOLS, NEEDS_CONFIRMATION, ON_HOLD, TOOL_GUIDE, TOOL_NAMES, TOOLS, classify_reply,
                         describe, parse_tool_calls, announces_action, claims_action, NUDGE, HONEST,
                         looks_like_tool_text,
@@ -356,8 +361,10 @@ def main() -> None:
     TOOL_START = getattr(tokenizer, "tool_call_start", None) or "<tool_call>"
 
     memory = Memory(vault)
+    support_dir = Path(os.environ.get("AIR_SUPPORT_DIR") or (Path.home() / "Library/Application Support/Air"))   # tests use their own
+    asst_mem = asst.AssistantMemory(support_dir / "assistant.json")
     # Speech speed (0.5-2x), set by voice ("speak faster", "speed 1.5"); remembered between launches.
-    speed_file = Path.home() / "Library/Application Support/Air/speech.json"
+    speed_file = Path(os.environ.get("AIR_SUPPORT_DIR") or (Path.home() / "Library/Application Support/Air")) / "speech.json"
     try:
         speed_box = {"v": max(0.5, min(2.0, float(json.loads(speed_file.read_text()).get("speed", 1.0))))}
     except Exception:
@@ -847,6 +854,10 @@ def main() -> None:
         if voice not in VOICES:
             voice = args.voice
         persona = (request.query.get("persona") or args.text_prompt).strip() or DEFAULT_PERSONA
+        assistant_mode = request.query.get("mode") == "assistant"
+        if assistant_mode:
+            # Assistant mode: a pure assistant role, no personality or specialist lens.
+            persona = asst.ASSISTANT_PERSONA
         personality = (request.query.get("personality") or "").strip()[:40]
         # "Think first": let a hybrid model reason before answering (hidden from speech).
         think = request.query.get("think") == "1" and can_think
@@ -860,15 +871,16 @@ def main() -> None:
             panel_size = max(2, min(3, int(request.query.get("panel") or 3)))
         except ValueError:
             panel_size = 3
-        if router is None or personality in {p_["name"] for p_ in specialists.values()}:
+        if router is None or personality in {p_["name"] for p_ in specialists.values()} or assistant_mode:
             orch_mode = "off"
         allowed = [x for x in (request.query.get("specialists") or "").split(",") if x in specialists]
         if allowed and orch_mode != "off" and set(allowed) != set(router.ids):
             router.set_specialists([specialists[x] for x in allowed])
         memory.reload()  # pick up edits the owner made to Profile.md in Obsidian
         last_persona["text"] = persona
-        recorder = SessionRecorder(vault, voice, persona, mode="Chat" if args.chat else "Aria", model_id=model_ids,
-                                   assistant="Aria", user_side=True)
+        recorder = SessionRecorder(vault, voice, persona, mode="Assistant" if assistant_mode else ("Chat" if args.chat else "Aria"),
+                                   model_id=model_ids, assistant="Aria", user_side=True,
+                                   folder="Assistant" if assistant_mode else "Sessions")
         recorder.personality = personality
         messages: list[dict] = build_messages(persona)
         # Continuity: the same conversation continues in its own note (orb, Esc, History > Continue).
@@ -876,7 +888,7 @@ def main() -> None:
         if resume_q:
             try:
                 note_ = Path(resume_q).resolve()
-                if note_.is_file() and (vault.resolve() / "Sessions") in note_.parents:
+                if note_.is_file() and ((vault.resolve() / "Sessions") in note_.parents or (vault.resolve() / "Assistant") in note_.parents):
                     prev_ = recorder.resume(note_)
                     if len(prev_) > 16:
                         # Long: carry the summary forward plus the most recent turns.
@@ -1116,7 +1128,7 @@ def main() -> None:
                     messages[0] = build_messages(result["persona"])[0]
                     recorder.personality = result.get("name", recorder.personality)
                     event(t="personality", name=result.get("name", ""))
-            elif name in TOOL_NAMES:
+            elif name in TOOL_NAMES or name in ("apple_note", "vault_note"):   # the last two: Assistant filing only
                 result = call_app_tool(name, clean)
             else:
                 result = {"ok": False, "error": f"unknown tool {name}"}
@@ -1465,6 +1477,96 @@ def main() -> None:
                     event(t="display", kind=kind, body=body[:20000])
                     trace("display", f"{kind} shown on screen ({len(body)} characters)")
 
+            def say_line(line: str) -> None:
+                """A fixed line from the app's own logic (not the model): shown in Chat, spoken in voice."""
+                if args.chat:
+                    send_text(line)
+                    return
+                rest_ = line
+                while True:
+                    chunk_, rest_ = pop_sentence(rest_, first=not spoken)
+                    if chunk_ is None or not speak(chunk_):
+                        break
+                if rest_.strip() and not cancelled():
+                    speak(rest_)
+
+            def assistant_turn(text_: str) -> bool:
+                """Assistant mode: capture, confirm with one card, file. True when the turn was handled here."""
+                lists_ = st.setdefault("asst_lists", list(asst.DEFAULT_LISTS))
+                folders_ = asst.vault_folders(vault)
+
+                def finish(line: str) -> bool:
+                    say_line(line)
+                    recorder.add_text(line, "Aria", new_line=True)
+                    messages.append({"role": "user", "content": text_})
+                    messages.append({"role": "assistant", "content": line})
+                    set_state("listening")
+                    return True
+
+                def propose(items_: list, said_: str) -> bool:
+                    st["pending_file"], st["pending_file_text"] = items_, said_
+                    summary_ = asst.plan_summary(items_)
+                    event(t="file_plan", items=items_, summary=summary_)
+                    trace("assistant", "Plan: " + summary_)
+                    return finish(summary_ + " Shall I file them?")
+
+                ck_ = asst.parse_checkin(text_)
+                if ck_ is not None:
+                    asst_mem.data.setdefault("checkins", {})[ck_[0]] = ck_[1]
+                    asst_mem.save()
+                    event(t="checkin", kind=ck_[0], time=ck_[1])
+                    return finish(f"Done: your {'morning brief' if ck_[0] == 'brief' else 'wrap-up'} is now at {ck_[1]}.")
+                pf_ = st.pop("pending_file", None)
+                if pf_ is not None:
+                    edit_ = st.pop("file_edit", None)
+                    verdict_ = classify_reply(text_)
+                    if verdict_ == "no" and len(re.findall(r"\w+", text_)) >= 4 and edit_ is None:
+                        verdict_ = "unclear"   # "No, the oat milk goes in Shopping": a correction, not a cancel
+                    if verdict_ == "no":
+                        event(t="file_done", filed=[])
+                        return finish("Okay, nothing filed.")
+                    if verdict_ == "yes":
+                        items_ = pf_
+                        if isinstance(edit_, list):
+                            # Edits from the card: keep known fields only, then fix destinations the same way.
+                            items_ = asst.normalise({"items": edit_}, lists_, folders_)
+                            for i_, it_ in enumerate(items_):
+                                it_["id"] = int(edit_[i_].get("id", i_ + 1)) if i_ < len(edit_) else it_["id"]
+                    else:
+                        # A correction in words ("no, the invoice goes in Freelance"): plan again with it.
+                        items_ = asst.extract(side_llm, f"{st.get('pending_file_text', '')}\n\nCorrection from the user: {text_}",
+                                              lists_, folders_, asst_mem.rules)
+                        for a_ in items_:
+                            b_ = next((p_ for p_ in pf_ if p_["text"].lower() == a_["text"].lower()), None)
+                            if b_ and (b_["destination"] != a_["destination"] or b_["kind"] != a_["kind"]):
+                                trace("assistant", "Learned: " + asst_mem.learn(a_["text"], a_["kind"], a_["destination"]))
+                        return propose(items_, st.get("pending_file_text", text_)) if items_ else finish("Okay, nothing to file then.")
+                    for t_, k_, d_ in asst.corrections(pf_, items_):
+                        trace("assistant", "Learned: " + asst_mem.learn(t_, k_, d_))
+                    results_ = []
+                    for it_ in items_:
+                        name_, a_ = asst.tool_call(it_)
+                        res_ = run_tool(name_, a_, "confirmed on the filing card")
+                        results_.append((it_, res_))
+                    try:
+                        asst.log_filed(vault, results_, recorder.path)
+                    except OSError as exc:
+                        emit("ERROR", f"assistant log: {exc}")
+                    ok_ = [it_ for it_, r_ in results_ if r_.get("ok")]
+                    bad_ = [(it_, r_) for it_, r_ in results_ if not r_.get("ok")]
+                    event(t="file_done", filed=[{**it_, "ok": bool(r_.get("ok")), "error": str(r_.get("error", ""))[:200]}
+                                                for it_, r_ in results_])
+                    line_ = f"Filed {len(ok_)} of {len(results_)}." if bad_ else ("Filed." if len(ok_) == 1 else f"Filed all {len(ok_)}.")
+                    if bad_:
+                        line_ += " Not filed: " + "; ".join(f"{it_['text']} ({str(r_.get('error', 'failed'))[:80]})" for it_, r_ in bad_[:3]) + "."
+                    return finish(line_)
+                if asst.looks_like_question(text_) or NOT_FILING.search(text_):
+                    return False   # a question or a command for Aria: the normal reply handles it
+                items_ = asst.extract(side_llm, text_, lists_, folders_, asst_mem.rules)
+                if not items_:
+                    return False
+                return propose(items_, text_)
+
             def generate(live: bool = True, check_claims: bool = False, check_sources: bool = False) -> tuple[str, list[dict]]:
                 """Stream one assistant message; speak it sentence by sentence.
                 Returns (text, tool_calls). Text after a <tool_call> tag is not spoken."""
@@ -1715,6 +1817,13 @@ def main() -> None:
                     event(t="new_topic")
                     set_state("listening")
                     return
+                if not assistant_mode and re.search(r"^\W*(ok(ay)?,? |hey aria,? |aria,? )?(please )?(switch to |go to |open |start |enter )?"
+                                                    r"(the )?assistant( mode)?\W*$", text, re.I):
+                    recorder.add_text(text, "You", new_line=True)
+                    event(t="assistant_mode")
+                    trace("conversation", "Switching to Assistant mode")
+                    set_state("listening")
+                    return
                 if (new_speed := parse_speed(text, speed_box["v"])) is not None:
                     recorder.add_text(text, "You", new_line=True)
                     speed_box["v"] = new_speed
@@ -1752,6 +1861,8 @@ def main() -> None:
                 else:
                     trace("screen", text.strip("()"))
 
+                if assistant_mode and not internal and assistant_turn(text):
+                    return
                 asked = st.pop("pending_choice", None)
                 if asked is not None:
                     opts = asked["options"]
@@ -2203,6 +2314,15 @@ def main() -> None:
                         if st["mute_voice"]:
                             st["play_until"] = 0.0
                             send(6)  # stop what's playing now
+                    elif data.get("type") == "file_answer" and st.get("pending_file"):
+                        # The filing card: OK (with any edits the owner made) or Cancel.
+                        st["file_edit"] = data.get("items") if isinstance(data.get("items"), list) else None
+                        typed = "Yes." if data.get("answer") == "yes" else "No."
+                        gen_id = st["gen"] + 1
+                        st["gen"] = gen_id
+                        st["busy"] = True
+                        set_state("thinking")
+                        gpu_jobs.put(lambda t_=typed, g_=gen_id, e_=time.monotonic(): reply(None, e_, g_, typed=t_))
                     elif data.get("type") == "choice" and st.get("pending_choice"):
                         # A clicked or keyed option: answer it like a spoken turn.
                         try:

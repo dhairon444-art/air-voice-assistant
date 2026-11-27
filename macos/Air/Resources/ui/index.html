@@ -44,9 +44,11 @@
   }
 
   let resumeNote = '';
+  let startMode = '';
   async function start(opts) {
     if (live || ws) return;
     resumeNote = (opts && opts.resume) || '';
+    startMode = (opts && opts.mode) || '';
     post({ type: 'state', state: 'connecting' });
     if (cfg.chat) { return connect(); }   // Chat: typed only, no microphone or audio
     try {
@@ -67,7 +69,7 @@
   function connect() {
     const q = new URLSearchParams({ voice: cfg.voice || '', persona: cfg.persona || '', personality: cfg.personalityName || '',
       think: cfg.think ? '1' : '0', web: cfg.web === false ? '0' : '1', showThinking: cfg.showThinking ? '1' : '0',
-      temp: String(cfg.temperature ?? ''), noise: cfg.noise || 'music', sens: String(cfg.sens ?? 0.5), factcheck: cfg.factcheck || 'smart', resume: resumeNote, maxtabs: String(cfg.maxtabs ?? 15), confirmtabs: String(cfg.confirmtabs ?? 10), orch: cfg.orch || 'off', specialists: cfg.specialists || '' });
+      temp: String(cfg.temperature ?? ''), noise: cfg.noise || 'music', sens: String(cfg.sens ?? 0.5), factcheck: cfg.factcheck || 'smart', resume: resumeNote, maxtabs: String(cfg.maxtabs ?? 15), confirmtabs: String(cfg.confirmtabs ?? 10), orch: cfg.orch || 'off', specialists: cfg.specialists || '', mode: startMode });
     ws = new WebSocket(`ws://${location.host}/api/chat?${q}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (ev) => {

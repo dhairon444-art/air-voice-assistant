@@ -60,6 +60,10 @@ final class ToolRunner {
             case "read_conversation": return try readConversation(str(args, "which"))
             case "create_note": return try writeNote(str(args, "title"), str(args, "content"), append: false)
             case "append_to_note": return try writeNote(str(args, "title"), str(args, "content"), append: true)
+            case "vault_note": return try vaultNote(args)
+            case "apple_note": return try await appleNote(args)
+            case "assistant_open": return try await openReminders()
+            case "assistant_reschedule": return try await reschedule(str(args, "reminder_id"), args["due"] as? String)
             // files
             case "find_files": return try findFiles(str(args, "query"))
             case "read_file": return try readFile(str(args, "path"))
@@ -363,6 +367,7 @@ final class ToolRunner {
         e.startDate = start
         e.endDate = start.addingTimeInterval(Double((a["duration_minutes"] as? Int) ?? 60) * 60)
         e.location = a["location"] as? String
+        if let n = a["notes"] as? String, !n.isEmpty { e.notes = n }
         if let cal = a["calendar"] as? String,
            let c = store.calendars(for: .event).first(where: { $0.title.lowercased() == cal.lowercased() && $0.allowsContentModifications }) {
             e.calendar = c
@@ -416,6 +421,37 @@ final class ToolRunner {
                   items.prefix(8).compactMap(\.title).joined(separator: "; "), ["reminders": out])
     }
 
+    /// Assistant task views: every open reminder (no cap), with list, due date and priority.
+    private func openReminders() async throws -> Result {
+        try await access(.reminder)
+        let pred = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
+        let items: [EKReminder] = await withCheckedContinuation { cont in
+            store.fetchReminders(matching: pred) { cont.resume(returning: $0 ?? []) }
+        }
+        let out: [Result] = items.prefix(500).map { r in
+            var d: Result = ["id": r.calendarItemIdentifier, "title": r.title ?? "", "list": r.calendar?.title ?? "",
+                             "priority": r.priority, "notes": r.notes ?? ""]
+            if let due = r.dueDateComponents?.date { d["due"] = iso.string(from: due) }
+            return d
+        }
+        return ok("\(items.count) open reminders", ["reminders": out])
+    }
+
+    /// Board drag and drop: a new due date (nil or "" clears it).
+    private func reschedule(_ id: String, _ due: String?) async throws -> Result {
+        try await access(.reminder)
+        guard let r = store.calendarItem(withIdentifier: id) as? EKReminder else { throw ToolError("I couldn't find that reminder.") }
+        if let d = parseDate(due) {
+            r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: d)
+            r.alarms?.forEach { r.removeAlarm($0) }
+            r.addAlarm(EKAlarm(absoluteDate: d))
+        } else {
+            r.dueDateComponents = nil
+        }
+        try store.save(r, commit: true)
+        return ok("Moved \(r.title ?? "")")
+    }
+
     private func addReminder(_ a: [String: Any]) async throws -> Result {
         try await access(.reminder)
         let r = EKReminder(eventStore: store)
@@ -430,6 +466,8 @@ final class ToolRunner {
             r.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: due)
             r.addAlarm(EKAlarm(absoluteDate: due))
         }
+        if (a["priority"] as? String) == "high" { r.priority = 1 }
+        if let n = a["notes"] as? String, !n.isEmpty { r.notes = n }
         try store.save(r, commit: true)
         return ok("Added reminder \(r.title ?? "") to \(r.calendar?.title ?? "Reminders")",
                   ["reminder": ["id": r.calendarItemIdentifier, "title": r.title ?? ""]])
@@ -475,6 +513,59 @@ final class ToolRunner {
         else { throw ToolError("I couldn't find a conversation for \(which).") }
         let lines = note.transcript().map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
         return ok("Conversation from \(note.title) (\(note.mode))", ["transcript": String(lines.prefix(3500))])
+    }
+
+    /// Assistant filing: a note in a vault folder ("" = the vault's top level, e.g. the People note).
+    private func vaultNote(_ a: [String: Any]) throws -> Result {
+        let title = try str(a, "title").replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = (a["content"] as? String) ?? ""
+        let folder = ((a["folder"] as? String) ?? "").replacingOccurrences(of: "..", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        let dir = folder.isEmpty ? Vault.url : Vault.url.appendingPathComponent(folder, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(title + ".md")
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
+        let tags = ((a["tags"] as? [String]) ?? ["air"]).map { $0.lowercased().replacingOccurrences(of: " ", with: "-") }
+        if FileManager.default.fileExists(atPath: url.path) {
+            let h = try FileHandle(forWritingTo: url)
+            defer { try? h.close() }
+            h.seekToEndOfFile()
+            h.write(Data("\n- \(stamp): \(content)\n".utf8))
+            return ok("Added to \(folder.isEmpty ? "" : folder + "/")\(title)")
+        }
+        let body = "---\ncreated: \(day.string(from: Date()))\ntags: [\(tags.joined(separator: ", "))]\n---\n# \(title)\n\n"
+            + ((a["append"] as? Bool) == true ? "- \(stamp): \(content)\n" : "\(content)\n") + "\n_Filed by Aria (Assistant), \(stamp)._\n"
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        return ok("Saved \(title) in \(folder.isEmpty ? "the vault" : folder)")
+    }
+
+    /// Assistant filing: an idea in Apple Notes (folder "Ideas", created if missing), tagged with #hashtags.
+    private func appleNote(_ a: [String: Any]) async throws -> Result {
+        try await ensureAutomation("com.apple.Notes", "Notes", launch: true)
+        let title = try str(a, "title")
+        let folder = (a["folder"] as? String) ?? "Ideas"
+        let tags = ((a["tags"] as? [String]) ?? []).map { "#" + $0.lowercased().replacingOccurrences(of: " ", with: "-") }
+        let body = ((a["body"] as? String) ?? title) + (tags.isEmpty ? "" : "\n\n" + tags.joined(separator: " "))
+        let script = """
+        on run argv
+          set f to item 1 of argv
+          set t to item 2 of argv
+          set b to item 3 of argv
+          tell application "Notes"
+            set acc to default account
+            if not (exists folder f of acc) then make new folder at acc with properties {name:f}
+            make new note at folder f of acc with properties {name:t, body:"<h1>" & t & "</h1><p>" & b & "</p>"}
+          end tell
+          return "ok"
+        end run
+        """
+        _ = try await osa(script, [folder, Self.html(title), Self.html(body).replacingOccurrences(of: "\n", with: "<br>")])
+        return ok("Saved the idea \(title) in Notes, \(folder)")
+    }
+
+    private static func html(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
     }
 
     private func writeNote(_ title: String, _ content: String, append: Bool) throws -> Result {

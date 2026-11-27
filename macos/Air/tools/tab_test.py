@@ -57,7 +57,8 @@ class Engine:
     async def start(self):
         vault = Path(tempfile.mkdtemp(prefix="air-test-vault-"))
         cache = Path(tempfile.mkdtemp(prefix="air-test-cache-"))
-        env = dict(os.environ, AIR_DEBUG_GEN="1", AIR_DRY_OPEN="1", AIR_PROMPT_CACHE_DIR=str(cache), HF_HUB_OFFLINE="1")
+        support = Path(tempfile.mkdtemp(prefix="air-test-support-"))
+        env = dict(os.environ, AIR_SUPPORT_DIR=str(support), AIR_DEBUG_GEN="1", AIR_DRY_OPEN="1", AIR_PROMPT_CACHE_DIR=str(cache), HF_HUB_OFFLINE="1")
         cmd = [self.a.python, "-u", str(SERVER), "--vault", str(vault), "--ui-dir", str(UI), "--llm", self.a.llm]
         if self.a.chat:
             cmd.append("--chat")
@@ -106,7 +107,7 @@ class Engine:
         if ws is not None:
             return await self._turn_on(ws, text, timeout)
         orch = getattr(self.a, "orch", "off")
-        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
+        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}&mode={getattr(self.a, 'mode', '')}"
         async with aiohttp.ClientSession() as s, s.ws_connect(url, max_msg_size=0) as ws_:
             refused = await self._wait_ready(ws_)
             if refused:
@@ -121,7 +122,7 @@ class Engine:
     async def session(self):
         """A WebSocket for a multi-turn conversation (ready already received)."""
         orch = getattr(self.a, "orch", "off")
-        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}"
+        url = f"http://127.0.0.1:{self.port}/api/chat?think={'1' if self.a.think else '0'}&web=1&orch={orch}&mode={getattr(self.a, 'mode', '')}"
         self._http = aiohttp.ClientSession()
         ws = await self._http.ws_connect(url, max_msg_size=0)
         refused = await self._wait_ready(ws)

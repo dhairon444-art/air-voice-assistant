@@ -142,11 +142,14 @@ struct SessionNote: Identifiable, Hashable {
     }
 
     static func all() -> [SessionNote] {
-        guard let e = FileManager.default.enumerator(at: Vault.sessionsURL, includingPropertiesForKeys: nil,
-                                                     options: [.skipsHiddenFiles]) else { return [] }
         var notes: [SessionNote] = []
-        for case let u as URL in e where u.pathExtension == "md" {
-            notes.append(load(u))
+        // Talk and Chat conversations, plus Assistant mode's own folder.
+        for root in [Vault.sessionsURL, Vault.url.appendingPathComponent("Assistant", isDirectory: true)] {
+            guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                         options: [.skipsHiddenFiles]) else { continue }
+            for case let u as URL in e where u.pathExtension == "md" {
+                notes.append(load(u))
+            }
         }
         return notes.sorted { $0.url.lastPathComponent > $1.url.lastPathComponent }
     }
