@@ -311,7 +311,7 @@ def parse_tool_calls(text: str) -> list[dict]:
     calls = []
     dec = json.JSONDecoder()
     if "<tool_call>" not in text:
-        loose = parse_loose_calls(text)
+        loose = parse_loose_calls(text) or _json_calls(text)
         if loose:
             return loose
     for m in re.finditer(r"<tool_call>", text):
@@ -390,7 +390,7 @@ _INTENT = re.compile(r"\b(let me (?!know)|i'll|i will|i'm going to|just a moment
 
 
 # A request to DO something on the Mac or the web (act at once; no narration first).
-ACT_ASK = re.compile(r"^\W*(please |can you |could you |would you |aria,? )*(open|close|quit|launch|search|look up|google|find|"
+ACT_ASK = re.compile(r"^\W*((uh+|um+|er+|hmm+|okay|ok|so|and|now|hey|hi|right|alright|well|also|then|just|please|aria|hey aria|can you|could you|would you|will you|i want you to|i need you to|i'd like you to|go ahead and)[\s,.!]+)*(open|close|quit|launch|search|look up|google|find|"
                      r"read|summari[sz]e|remind|add|create|schedule|move|delete|cancel|save|export|download|play|pause|"
                      r"skip|mute|unmute|set|turn|switch|show|watch|email|message|text|send|run|check)\b", re.I)
 # Plans or announcements instead of acting ("I'll open...", "Here's what I'll do").
@@ -502,10 +502,38 @@ def parse_loose_calls(text: str) -> list[dict]:
     return out
 
 
+def _json_calls(text: str) -> list[dict]:
+    """Bare JSON calls with no <tool_call> tag, e.g. the 8B writing ```json {"name": "open_url", "arguments": {...}}```
+    or a list of them. Only objects naming a known tool count."""
+    dec = json.JSONDecoder()
+    out, i = [], 0
+    while (j := text.find("{", i)) >= 0:
+        try:
+            obj, end = dec.raw_decode(text[j:])
+        except ValueError:
+            i = j + 1
+            continue
+        i = j + end
+        if isinstance(obj, dict) and obj.get("name") in TOOL_NAMES:
+            a = obj.get("arguments", obj.get("parameters")) or {}
+            if isinstance(a, str):
+                try:
+                    a = json.loads(a)
+                except ValueError:
+                    a = {}
+            out.append({"name": obj["name"], "arguments": a if isinstance(a, dict) else {}})
+    return out
+
+
+_JSON_CALL = re.compile(r'"name"\s*:\s*"(\w+)"')
+
+
 def looks_like_tool_text(text: str) -> bool:
     """A sentence that is really a tool call written as text (never speak it)."""
     _tool_regex()
-    return bool(_CALL_START.search(text or "") or _TOOL_RE.search(text or ""))
+    t = text or ""
+    return bool(_CALL_START.search(t) or _TOOL_RE.search(t)
+                or any(m.group(1) in TOOL_NAMES for m in _JSON_CALL.finditer(t)))
 
 
 _ACT = (r"(closed|quit|moved|deleted|cancel+ed|added|set|muted|unmuted|sent|created|marked|opened|switched|"

@@ -17,12 +17,22 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+
+
+def _open_in_browser(url: str) -> None:
+    """Open a link in the default browser. AIR_DRY_OPEN=1 (tests) only logs it."""
+    if os.environ.get("AIR_DRY_OPEN") == "1":
+        print(f"DRYOPEN {url}", file=sys.stderr, flush=True)
+        return
+    subprocess.run(["/usr/bin/open", url], check=False, timeout=10)
+
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
@@ -204,7 +214,7 @@ class WebSession:
             return {"ok": False, "error": "I can only open web links (http or https)."}
         if (o := self._offline()):
             return o
-        subprocess.run(["/usr/bin/open", url], check=False, timeout=10)
+        _open_in_browser(url)
         self._note("opened", url)
         return {"ok": True, "summary": f"Opened {urlparse(url).hostname} in your browser"}
 
@@ -253,7 +263,7 @@ class WebSession:
         if not urls:
             return {"ok": False, "error": "Those sites don't exist: " + ", ".join(missing) + ". Ask the user to say the name again."}
         for i, u in enumerate(urls):
-            subprocess.run(["/usr/bin/open", u], check=False, timeout=10)
+            _open_in_browser(u)
             self._note("opened", u)
             if i < len(urls) - 1:
                 time.sleep(0.35)   # keeps the tabs in the order asked

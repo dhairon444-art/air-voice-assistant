@@ -442,7 +442,7 @@ def main() -> None:
     # Persistent prompt cache: the primed system prompt's KV cache on disk (~0.9 GB for the 4B), so a
     # launch loads it in under a second instead of re-processing ~6k tokens (~20 s on an M4). Keyed by
     # brain; the file sharing the longest token prefix is loaded and only the differing tail is processed.
-    pc_dir = Path.home() / "Library/Caches/Air/prompt"
+    pc_dir = Path(os.environ.get("AIR_PROMPT_CACHE_DIR") or (Path.home() / "Library/Caches/Air/prompt"))   # tests use their own
     pc_key = (re.sub(r"[^A-Za-z0-9]+", "_", args.llm.split("/")[-1]) + ("-chat" if args.chat else "")
               + ("-d" + re.sub(r"[^A-Za-z0-9]+", "_", args.draft.split("/")[-1]) if draft is not None else ""))
     PC_CAP = 2 * 1024 ** 3
@@ -1184,6 +1184,9 @@ def main() -> None:
                 else:
                     kind, body = "markdown", raw       # no tag: the first line is content
                 body = body.strip("\n")
+                if args.tools and kind in ("code", "markdown") and looks_like_tool_text(body) and parse_tool_calls(body):
+                    emit("DISPLAY", "a tool call written in a code block: run, not shown")
+                    return
                 # Trivial structure isn't worth the screen: a table needs 2+ data rows, a diagram 3+ links.
                 rows = [ln for ln in body.splitlines() if ln.strip().startswith("|") and not re.fullmatch(r"[|:\-\s]+", ln.strip())]
                 if (kind == "table" and len(rows) < 3) or (kind == "mermaid" and len(re.findall(r"--|==", body)) < 3):
@@ -1373,8 +1376,10 @@ def main() -> None:
                 if think_text and show["on"]:
                     recorder.thinking.append((time.strftime("%H:%M:%S"), "reasoning", "".join(think_text).strip()[:4000]))
                 think_text.clear()
-                calls = parse_tool_calls(full)
-                text = re.sub(r"<think>.*?</think>|<\|channel>.*?<channel\|>", "", full, flags=re.S)
+                # Parse calls from the answer only: a call drafted inside the reasoning is not a call.
+                answer = re.sub(r"<think>.*?</think>|<\|channel>.*?<channel\|>", "", full, flags=re.S)
+                calls = parse_tool_calls(answer) or (parse_tool_calls(full) if TOOL_START in full else [])
+                text = answer
                 text = re.sub(r"<\|?[a-z_\"]+\|?>", "", text.split(TOOL_START, 1)[0]).strip()
                 return text, calls
 
