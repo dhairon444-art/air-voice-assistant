@@ -29,8 +29,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // The engine's web view stays in the window (tiny, invisible) so audio keeps running on any tab.
-            EngineHost(controller: web).frame(width: 2, height: 2).opacity(0.01).accessibilityHidden(true)
             Group {
                 switch ui.tab {
                 case .talk: talkView
@@ -71,18 +69,6 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $ui.showOnboarding) { OnboardingView() }
-        .onChange(of: model.state) { _, s in
-            switch s {
-            case .ready(let port):
-                EngineTasks.port = port
-                var cfg = prefs.engineConfig
-                cfg["chat"] = model.chatModel != nil
-                web.load(port: port, config: cfg)
-            default: web.unload()
-            }
-        }
-        .onChange(of: prefs.engineConfigKey) { _, _ in web.updateConfig(prefs.engineConfig) }
-        .onChange(of: prefs.personality) { _, _ in web.prime(persona: prefs.persona) }
         // Chat unloads the voice engine (more RAM for a bigger model); Talk brings it back.
         .onChange(of: ui.tab) { _, t in
             if UserDefaults.standard.string(forKey: "AirDemo") != nil { return }   // screenshots: no engine

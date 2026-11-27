@@ -795,18 +795,21 @@ struct OrbView: View {
 
 struct CaptionsView: View {
     @EnvironmentObject var web: WebController
+    /// Whose conversation: "" (Talk) or "assistant".
+    var mode = ""
+    private var lines: [Turn] { web.turnsFor(mode) }
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if web.turns.isEmpty {
-                        Text(web.live ? "Your words and Aria's replies appear here as you talk."
+                    if lines.isEmpty {
+                        Text((web.live && web.mode == mode) ? "Your words and Aria's replies appear here as you talk."
                                       : "Captions of both sides appear here. Conversations are saved to your Air vault.")
                             .font(.callout).foregroundStyle(.tertiary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 8)
                     }
-                    ForEach(web.turns) { turn in
+                    ForEach(lines) { turn in
                         TurnView(turn: turn).id(turn.id)
                     }
                 }
@@ -815,7 +818,7 @@ struct CaptionsView: View {
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: web.turns) { _, turns in
+            .onChange(of: lines) { _, turns in
                 if let last = turns.last {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
                 }

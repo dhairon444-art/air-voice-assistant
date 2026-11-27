@@ -14,10 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
     private var assistantWindow: NSWindow?
+    private var engineWindow: NSPanel?
+    private var engineSubs: [AnyCancellable] = []
     var island: IslandController?
     private var liveSub: Any?
     private var statusItem: NSStatusItem?
     private var hotKeyRef: EventHotKeyRef?
+    private var assistantHotKeyRef: EventHotKeyRef?
     private var keyMonitor: Any?
     private var signalSources: [DispatchSourceSignal] = []
     static var shared: AppDelegate!
@@ -82,6 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppearanceMode.apply()  // window colour for AMOLED, now that the window exists
         NSApp.activate(ignoringOtherApps: true)
 
+        installEngineHost()
+        NotificationCenter.default.addObserver(self, selector: #selector(conversationWindowClosed(_:)),
+                                               name: NSWindow.willCloseNotification, object: window)
         installKeyMonitor()
         applyQuickAccess()
         island = IslandController(web: web, prefs: prefs) { [weak self] in self?.showTalk() }
@@ -111,7 +117,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { statusItem == nil }
+    /// The engine's own tiny window never closes, so "last window" is decided here: with no menu bar
+    /// icon, Air quits when both Talk and the Assistant window are closed (as before).
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    @objc private func conversationWindowClosed(_ n: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.statusItem == nil else { return }
+            if !self.window.isVisible && !(self.assistantWindow?.isVisible ?? false) && self.settingsWindow?.isVisible != true {
+                NSApp.terminate(nil)
+            }
+        }
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showMain()
@@ -130,6 +147,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.stop()
     }
 
+    // MARK: the engine host (independent of Talk and Assistant windows)
+
+    /// The engine's web view (mic in, voice out) lives in a tiny, always-present, click-through window,
+    /// so Talk and Assistant both work with any window closed, and WebKit never pauses it as hidden.
+    /// Connecting to the engine when it starts and pushing settings also happen here, not in a window.
+    private func installEngineHost() {
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 2, height: 2), styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.alphaValue = 0.02
+        p.ignoresMouseEvents = true
+        p.hasShadow = false
+        p.level = .normal
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        p.isReleasedWhenClosed = false
+        p.title = "Air engine"
+        p.contentView = NSHostingView(rootView: EngineHost(controller: web).frame(width: 2, height: 2))
+        if let s = NSScreen.main?.frame { p.setFrameOrigin(NSPoint(x: s.minX, y: s.minY)) }
+        p.orderFrontRegardless()
+        engineWindow = p
+
+        engineSubs.append(model.$state.removeDuplicates().sink { [weak self] s in
+            guard let self else { return }
+            switch s {
+            case .ready(let port):
+                EngineTasks.port = port
+                var cfg = self.prefs.engineConfig
+                cfg["chat"] = self.model.chatModel != nil
+                self.web.load(port: port, config: cfg)
+            default:
+                self.web.unload()
+            }
+        })
+        var lastKey = prefs.engineConfigKey
+        engineSubs.append(prefs.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self else { return }
+            let k = self.prefs.engineConfigKey
+            if k != lastKey { lastKey = k; self.web.updateConfig(self.prefs.engineConfig) }
+        })
+        engineSubs.append(web.$engineReady.removeDuplicates().sink { [weak self] ready in
+            guard let self, ready, self.pendingAssistantStart else { return }
+            self.pendingAssistantStart = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.web.switchMode("assistant") }
+        })
+        engineSubs.append(prefs.$personality.removeDuplicates().dropFirst().sink { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.main.async { self.web.prime(persona: self.prefs.persona) }
+        })
+    }
+
+    /// Talk or Assistant is on screen (either counts as in use).
+    private var anyConversationWindowVisible: Bool {
+        window.isVisible || (assistantWindow?.isVisible ?? false)
+    }
+
     // MARK: keep ready in the background
 
     private var idleTimer: Timer?
@@ -146,14 +219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.prefs.keepReady, !self.web.live, self.statusItem != nil else { return }
+                guard let self, !self.prefs.keepReady, !self.web.live, self.statusItem != nil,
+                      !(self.assistantWindow?.isVisible ?? false) else { return }
                 self.unloadEngine(reason: "window closed")
             }
         }
     }
 
     private func checkIdle() {
-        guard prefs.keepReady, !unloaded, !web.live, !window.isVisible else { return }
+        guard prefs.keepReady, !unloaded, !web.live, !anyConversationWindowVisible else { return }
         if Date().timeIntervalSince(lastActive) > prefs.idleUnloadHours * 3600 {
             unloadEngine(reason: "idle for \(Int(prefs.idleUnloadHours)) h")
         }
@@ -221,10 +295,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.setFrameAutosaveName("AirAssistant")
             if !w.setFrameUsingName("AirAssistant") { w.center() }
             assistantWindow = w
+            NotificationCenter.default.addObserver(self, selector: #selector(conversationWindowClosed(_:)),
+                                                   name: NSWindow.willCloseNotification, object: w)
         }
         assistantWindow?.makeKeyAndOrderFront(nil)
         AppearanceMode.apply()
         NSApp.activate(ignoringOtherApps: true)
+        if model.chatModel != nil {
+            // Chat runs a text-only engine: the Assistant needs the voice one (Talk's tab follows).
+            ui.tab = .talk
+            web.stop()
+            model.restart(voice: prefs.voice, persona: prefs.persona, brain: prefs.brain)
+            if start { pendingAssistantStart = true }
+            return
+        }
         if start { web.switchMode("assistant") }
     }
 
@@ -248,6 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
     }
+
+    private var pendingAssistantStart = false
 
     @objc func openAssistant() { showAssistant(start: web.live && web.mode != "assistant") }
 
@@ -308,16 +394,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func registerHotKey() {
         guard hotKeyRef == nil else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            Task { @MainActor in AppDelegate.shared?.hotKeyPressed() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var hk = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hk)
+            let which = hk.id
+            Task { @MainActor in
+                if which == 2 { AppDelegate.shared?.showAssistant(start: true) } else { AppDelegate.shared?.hotKeyPressed() }
+            }
             return noErr
         }, 1, &spec, nil, nil)
+        // Control-Option-A from anywhere: Assistant mode (Shift-Command-A stays an in-app shortcut, since
+        // Finder uses it for Applications).
+        RegisterEventHotKey(UInt32(kVK_ANSI_A), UInt32(controlKey | optionKey), EventHotKeyID(signature: OSType(0x41495231), id: 2),
+                            GetApplicationEventTarget(), 0, &assistantHotKeyRef)
         let id = EventHotKeyID(signature: OSType(0x41495231), id: 1)  // 'AIR1'
         RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 
     private func unregisterHotKey() {
         if let r = hotKeyRef { UnregisterEventHotKey(r); hotKeyRef = nil }
+        if let r = assistantHotKeyRef { UnregisterEventHotKey(r); assistantHotKeyRef = nil }
     }
 
     /// ⌃⌥Space from anywhere: bring Air forward and start talking, then pause and resume (like the orb).

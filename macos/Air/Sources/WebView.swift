@@ -293,10 +293,22 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     /// same conversation and note; `fresh` starts a new one; `resume` continues a given note (History).
     /// "" for Talk, "assistant" for Assistant mode (its own persona, notes folder and filing).
     @Published private(set) var mode = ""
+    private var saved: [String: ([Turn], String?, [PlanItem])] = [:]
+
+    /// The lines of one mode's conversation (the live one, or the last one of the other mode).
+    func turnsFor(_ m: String) -> [Turn] { m == mode ? turns : (saved[m]?.0 ?? []) }
 
     func start(resume: String? = nil, fresh: Bool = false, mode: String = "") {
         guard engineReady, !live else { return }
-        if mode != self.mode { currentNote = nil; turns = []; filePlan = nil; filed = [] }
+        if mode != self.mode {
+            // Talk and Assistant keep their own conversations (lines, note, filed list).
+            saved[self.mode] = (turns, currentNote, filed)
+            let back = saved[mode]
+            turns = back?.0 ?? []
+            currentNote = back?.1
+            filed = back?.2 ?? []
+            filePlan = nil
+        }
         self.mode = mode
         let idle = (UserDefaults.standard.object(forKey: "airNewConversationMinutes") as? Double) ?? 30
         var note = resume

@@ -182,7 +182,7 @@ struct AssistantView: View {
                     CheckinCard(kind: kind) { store.briefShown = nil }
                         .padding(.horizontal, 24).padding(.top, 14)
                 }
-                CaptionsView().padding(.horizontal, 20).padding(.top, 10)
+                CaptionsView(mode: "assistant").padding(.horizontal, 20).padding(.top, 10)
                 if web.live && web.mode == "assistant" {
                     TypeBox().padding(.horizontal, 20).padding(.bottom, 10)
                 }
