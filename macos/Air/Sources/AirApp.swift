@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AssistantStore.shared.startCheckins()
         // Test hooks (launch arguments only).
         let ud = UserDefaults.standard
+        if ud.bool(forKey: "AirCloseTalk") {
+            // Talk window closed (not just hidden): the Assistant must work on its own.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.window.close() }
+        }
         if ud.bool(forKey: "AirAssistant") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.showAssistant(start: false) }
         }
