@@ -263,6 +263,23 @@ class SessionRecorder:
         self.path = path
         _active_recorders.add(self)
 
+    prior: str | None = None          # resumed conversation: the note as it was
+    resumed_at: datetime | None = None
+
+    def resume(self, note: Path) -> list[dict]:
+        """Continue an earlier conversation in ITS note (one note per conversation). The note is never
+        rewritten: new transcript lines are inserted after the old ones under a 'Continued' marker.
+        Returns the earlier turns as chat messages."""
+        self.prior = note.read_text(encoding="utf-8")
+        self.path = note
+        self.resumed_at = datetime.now()
+        msgs = []
+        for line in self.prior.splitlines():
+            m = re.match(r"^\*\*\[\d+:\d\d\] ([^:]+):\*\* (.*)$", line)
+            if m:
+                msgs.append({"role": "user" if m.group(1) == "You" else "assistant", "content": m.group(2)})
+        return msgs
+
     def add_text(self, piece: str, speaker: str | None = None, new_line: bool = False) -> None:
         speaker = speaker or self.assistant
         now = time.monotonic()
@@ -405,8 +422,17 @@ class SessionRecorder:
         return "\n".join(fm + body)
 
     def save(self, final: bool = False) -> None:
+        text = self.render(final)
+        if self.prior is not None:
+            new = [l for l in text.splitlines() if re.match(r"^\*\*\[\d+:\d\d\] ", l)]
+            if not new:
+                return   # nothing new yet: leave the note exactly as it was
+            lines = self.prior.splitlines()
+            last = max((i for i, l in enumerate(lines) if re.match(r"^\*\*\[\d+:\d\d\] ", l)), default=len(lines) - 1)
+            marker = f"*Continued {self.resumed_at:%a %d %b %Y, %H:%M}*"
+            text = "\n".join(lines[:last + 1] + ["", marker, ""] + [l + "\n" for l in new] + lines[last + 1:]) + "\n"
         tmp = self.path.with_name("." + self.path.name + ".tmp")
-        tmp.write_text(self.render(final), encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, self.path)
 
     def finish(self) -> Path | None:
@@ -416,6 +442,13 @@ class SessionRecorder:
         _active_recorders.discard(self)
         self.end = datetime.now()
         duration = (self.end - self.start).total_seconds()
+        if self.prior is not None:
+            # A resumed conversation: never delete its note; just add what's new.
+            if self.has_text():
+                self.save(final=True)
+                write_index(self.vault)
+                return self.path
+            return None
         if not self.has_text() and duration < 5:
             # Nothing worth keeping (e.g. connect + immediate disconnect).
             self.path.unlink(missing_ok=True)

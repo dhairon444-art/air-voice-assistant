@@ -494,6 +494,7 @@ struct OrbMenuItems: View {
                 Label(web.paused ? "Resume" : "Pause", systemImage: web.paused ? "play.fill" : "pause.fill")
             }
             Button { close(); web.stop() } label: { Label("End conversation", systemImage: "xmark.circle") }
+            Button { close(); web.newConversation() } label: { Label("New conversation", systemImage: "plus.bubble") }
         } else {
             Button { close(); web.start() } label: { Label("Start talking", systemImage: "play.fill") }
                 .disabled(!web.engineReady)

@@ -145,6 +145,7 @@ struct ThemeCard: View {
 struct GeneralSettings: View {
     @EnvironmentObject var prefs: Prefs
     @State private var loginTick = false
+    @AppStorage("airNewConversationMinutes") private var newConvMinutes: Double = 30
     @EnvironmentObject var model: ModelProcess
     var body: some View {
         Form {
@@ -161,6 +162,7 @@ struct GeneralSettings: View {
                     .font(.callout).foregroundStyle(.secondary)
             } header: { Text("Orchestrator") }
             Section {
+                Stepper("Start a new conversation after \(Int(newConvMinutes)) min idle", value: $newConvMinutes, in: 5...240, step: 5)
                 Toggle("Keep Air ready in the background", isOn: $prefs.keepReady)
                     .disabled(!prefs.menuBarIcon)
                 if prefs.keepReady {

@@ -253,12 +253,31 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
     // MARK: controls
 
     private func js(_ s: String) { webView.evaluateJavaScript(s) }
-    func start() {
+    /// Continuity: the conversation (one note) this window is on, and when it was last active.
+    @Published private(set) var currentNote: String?
+    private var lastActive = Date.distantPast
+
+    /// Start talking. Within the idle window (Settings > General, default 30 min) this continues the
+    /// same conversation and note; `fresh` starts a new one; `resume` continues a given note (History).
+    func start(resume: String? = nil, fresh: Bool = false) {
         guard engineReady, !live else { return }
-        turns = []
+        let idle = (UserDefaults.standard.object(forKey: "airNewConversationMinutes") as? Double) ?? 30
+        var note = resume
+        if note == nil, !fresh, let n = currentNote, Date().timeIntervalSince(lastActive) < idle * 60 { note = n }
+        if note == nil || resume != nil { turns = [] }
         error = nil
         applyMutes()
-        js("window.airStart && window.airStart()")
+        js("window.airStart && window.airStart(\(Self.json(["resume": note ?? ""])))")
+    }
+    /// "New conversation": end this one and start a fresh note.
+    func newConversation() {
+        currentNote = nil
+        if live {
+            stop()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.start(fresh: true) }
+        } else {
+            turns = []
+        }
     }
     /// A JSON message straight to the engine (e.g. the live screen context).
     func sendToEngine(_ obj: [String: Any]) {
@@ -352,11 +371,13 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
         case "state":
             handleState(body["state"] as? String ?? "")
         case "you":
+            lastActive = Date()
             ariaOpen = false
             if choice?.answered != nil { choice = nil }  // the card stays until the next thing you say
             research = nil
             turns.append(Turn(speaker: .you, text: body["text"] as? String ?? ""))
         case "aria":
+            lastActive = Date()
             appendAria(body["text"] as? String ?? "")
         case "interrupted":
             if ariaOpen, let i = turns.lastIndex(where: { $0.speaker == .aria }) { turns[i].interrupted = true }
@@ -450,6 +471,11 @@ final class WebController: NSObject, ObservableObject, WKUIDelegate, WKNavigatio
             if (e["ask"] as? Bool) != true { pendingLens = label }
         case "doit":
             doItText = e["text"] as? String
+        case "note":
+            currentNote = e["path"] as? String
+            lastActive = Date()
+        case "new_topic":
+            newConversation()
         case "music":
             let now = Date()
             musicNote = now

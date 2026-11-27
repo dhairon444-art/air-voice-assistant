@@ -615,10 +615,10 @@ struct HistoryDetail: View {
     /// Start a new conversation that picks up where this one left off (memory recall finds this note).
     private func continueConversation() {
         AppActions.showTalk()
-        let summary = entry.note.summary.isEmpty ? store.title(entry) : entry.note.summary
-        web.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            web.say("Let's continue our conversation from \(entry.date.formatted(date: .abbreviated, time: .shortened)): \(summary)")
+        // The same conversation, in the same note, with its earlier turns as context.
+        if web.live { web.stop() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (web.live ? 0.8 : 0)) {
+            web.start(resume: entry.note.url.path)
         }
     }
 }

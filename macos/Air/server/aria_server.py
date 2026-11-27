@@ -608,6 +608,26 @@ def main() -> None:
                                    assistant="Aria", user_side=True)
         recorder.personality = personality
         messages: list[dict] = build_messages(persona)
+        # Continuity: the same conversation continues in its own note (orb, Esc, History > Continue).
+        resume_q = (request.query.get("resume") or "").strip()
+        if resume_q:
+            try:
+                note_ = Path(resume_q).resolve()
+                if note_.is_file() and (vault.resolve() / "Sessions") in note_.parents:
+                    prev_ = recorder.resume(note_)
+                    if len(prev_) > 16:
+                        # Long: carry the summary forward plus the most recent turns.
+                        summ_ = re.search(r'^summary: "?(.*?)"?$', recorder.prior or "", re.M)
+                        if summ_ and summ_.group(1).strip():
+                            messages.append({"role": "user", "content": f"(Earlier in this conversation: {summ_.group(1).strip()})"})
+                            messages.append({"role": "assistant", "content": "Got it."})
+                        prev_ = prev_[-12:]
+                    while prev_ and prev_[0]["role"] != "user":
+                        prev_ = prev_[1:]
+                    messages.extend(prev_)
+                    emit("STATUS", f"continuing {note_.name} ({len(prev_)} earlier turns)")
+            except Exception as exc:
+                emit("STATUS", f"couldn't continue {resume_q}: {exc}")
         st = {
             "gen": 0,                 # bumped to cancel the reply being generated
             "play_until": 0.0,        # monotonic time when queued audio finishes playing
@@ -1370,6 +1390,13 @@ def main() -> None:
                     emit("TURN", f"skipped: text={text!r} cancelled={cancelled()}")
                     set_state("listening")
                     return
+                if re.search(r"^\W*(let'?s )?(start )?(a )?(new (topic|conversation|chat)|start (over|fresh)|fresh start)\W*$", text, re.I):
+                    # The app ends this conversation and starts a fresh one (a new note).
+                    recorder.add_text(text, "You", new_line=True)
+                    trace("conversation", "New topic: starting a new conversation")
+                    event(t="new_topic")
+                    set_state("listening")
+                    return
                 extra_ctx = ""
                 if image:
                     # An attached image (Chat): the vision model describes it for this turn; the file stays local.
@@ -1651,6 +1678,7 @@ def main() -> None:
         emit("STATUS", f"session start mode=Aria voice={voice} think={think} personality={personality or 'Custom'}")
         trace("personality", f"Personality: {personality or 'Custom'}")
         await ws.send_bytes(b"\x00")
+        event(t="note", path=str(recorder.path), resumed=recorder.prior is not None)
         set_state("listening")
         send_task = asyncio.create_task(sender())
         save_task = asyncio.create_task(autosave())
